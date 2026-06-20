@@ -1,0 +1,8 @@
+name: "Full scan"
+description: >
+  All six attack classes with enough trials to produce stable
+  Attack Success Rates with 95% confidence intervals.
+attacks: all
+iterations: 25
+trials: 5
+baseline_runs: 3

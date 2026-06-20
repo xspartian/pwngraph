@@ -1,0 +1,8 @@
+name: "Quick scan"
+description: >
+  Fast smoke test — prompt exfiltration only, low trial count.
+  Use to verify connectivity and get a first signal in under a minute.
+attacks: prompt_exfiltration
+iterations: 10
+trials: 1
+baseline_runs: 2

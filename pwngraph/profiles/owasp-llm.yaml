@@ -1,0 +1,8 @@
+name: "OWASP LLM Top 10"
+description: >
+  Coverage-oriented run mapped to the OWASP LLM Top 10 (2025). Runs every
+  attack class so the OWASP coverage matrix in the report is fully populated.
+attacks: all
+iterations: 30
+trials: 5
+baseline_runs: 3

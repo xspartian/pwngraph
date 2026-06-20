@@ -1,0 +1,8 @@
+name: "Paranoid"
+description: >
+  Maximum-coverage run — high iteration and trial counts for the most
+  statistically confident ASR. Slow and API-cost heavy; use before a release.
+attacks: all
+iterations: 50
+trials: 10
+baseline_runs: 5

@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PwnGraph Report — {{ target_name }}</title>
+<style>
+  :root {
+    --bg:      #0D1117;
+    --surface: #161b22;
+    --card:    #1c2128;
+    --border:  #30363d;
+    --text:    #E6EDF3;
+    --muted:   #8b949e;
+    --primary: #58a6ff;
+    --accent:  #FF2E63;
+    --crit:    #FF2E63;
+    --high:    #f0883e;
+    --med:     #d29922;
+    --low:     #3fb950;
+    --info:    #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); font-size: 15.5px; line-height: 1.65;
+  }
+  /* ---- Top nav ---- */
+  .topnav {
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 28px; height: 54px;
+    background: rgba(22,27,34,0.95); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .brand { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: .3px; }
+  .brand span { color: var(--accent); }
+  .nav-meta { color: var(--muted); font-size: 13px; }
+  .nav-spacer { flex: 1; }
+  .nav-btn {
+    padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    background: var(--accent); color: #fff; border: none; cursor: pointer;
+    text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .nav-btn:hover { opacity: 0.88; }
+  .nav-btn.secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+  .nav-btn.secondary:hover { border-color: var(--primary); color: var(--primary); opacity: 1; }
+
+  /* ---- CVSS vector box ---- */
+  .cvss-vector {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px; letter-spacing: 0.3px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    padding: 14px 18px; border-radius: 6px; margin: 12px 0;
+    word-break: break-all; color: var(--primary);
+  }
+
+  /* ---- Print / Export to PDF ---- */
+  @media print {
+    .topnav, .filter-bar { display: none !important; }
+    body { background: #fff; color: #000; }
+    .card, .finding-card, table, .exec-summary { break-inside: avoid; }
+    .content { max-width: 100%; padding: 0; }
+    a[href]:after { content: ""; }
+  }
+
+  /* ---- Layout ---- */
+  .content { max-width: 1100px; margin: 0 auto; padding: 28px 28px 60px; }
+  h1 { margin: 0 0 4px; color: var(--text); font-size: 26px; font-weight: 700; }
+  h2 {
+    color: var(--text); margin-top: 36px; font-size: 17px; font-weight: 700;
+    border-bottom: 1px solid var(--border); padding-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  h2::before { content: "//"; color: var(--accent); font-family: ui-monospace, monospace; font-size: 14px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; color: var(--text); }
+  .meta { color: var(--muted); font-size: 13px; }
+
+  /* ---- Cards ---- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+           gap: 10px; margin: 16px 0; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  .card .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px;
+                 color: var(--muted); margin-bottom: 6px; }
+  .card .value { font-size: 26px; font-weight: 700; color: var(--text); }
+
+  /* ---- Badges ---- */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px;
+           font-size: 10px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.4px; color: white; }
+  .badge.critical { background: var(--crit); }
+  .badge.high     { background: var(--high); }
+  .badge.medium   { background: var(--med); color: #000; }
+  .badge.low      { background: var(--low); color: #000; }
+  .badge.info     { background: var(--info); }
+
+  /* ---- Tables ---- */
+  table { width: 100%; border-collapse: collapse;
+          background: var(--card); border: 1px solid var(--border);
+          border-radius: 8px; overflow: hidden; }
+  th, td { padding: 11px 15px; text-align: left; border-bottom: 1px solid var(--border);
+           vertical-align: top; font-size: 14px; }
+  th { background: var(--surface); color: var(--muted); font-weight: 600; font-size: 11px;
+       text-transform: uppercase; letter-spacing: 0.6px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(88,166,255,0.04); }
+
+  /* ---- Code / mono ---- */
+  code { background: var(--surface); padding: 2px 6px; border-radius: 4px;
+         font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         font-size: 11px; color: var(--primary); border: 1px solid var(--border); }
+  .path-chain { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text); }
+  .arrow { color: var(--accent); font-weight: 700; margin: 0 4px; }
+
+  /* ---- Pills ---- */
+  .pills span { display: inline-block; background: var(--surface); color: var(--primary);
+                font-size: 11px; padding: 3px 10px; border-radius: 10px;
+                margin: 2px 4px 2px 0; border: 1px solid var(--border); }
+
+  /* ---- Executive summary ---- */
+  .exec-summary {
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 8px 8px 0; padding: 18px 20px; margin-bottom: 24px;
+  }
+  .exec-summary h2 { color: var(--accent); margin-top: 0; border: none; padding: 0; }
+  .exec-summary h2::before { display: none; }
+
+  /* ---- Finding cards ---- */
+  .finding-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 18px 20px; margin-bottom: 16px;
+  }
+
+  /* ---- Tool risk bar ---- */
+  .tool-risk-chart { margin: 12px 0 20px; }
+  .risk-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  .risk-label { width: 160px; font-size: 12px; font-family: ui-monospace, monospace;
+                text-align: right; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; color: var(--muted); }
+  .risk-bar-bg { flex: 1; background: var(--surface); border-radius: 4px; height: 12px;
+                 border: 1px solid var(--border); }
+  .risk-bar { height: 100%; background: var(--accent); border-radius: 4px;
+              transition: width 0.4s ease; min-width: 2px; }
+  .risk-count { width: 28px; font-size: 12px; color: var(--muted); }
+
+  /* ---- Filter bar ---- */
+  .filter-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+                margin-bottom: 12px; padding: 10px 14px;
+                background: var(--card); border: 1px solid var(--border); border-radius: 8px; }
+  .filter-bar label { font-size: 12px; color: var(--muted); display: flex;
+                      align-items: center; gap: 6px; }
+  .filter-bar select { font-size: 12px; padding: 4px 8px; border: 1px solid var(--border);
+                       border-radius: 4px; background: var(--surface); color: var(--text); outline: none; }
+  .filter-bar select:focus { border-color: var(--primary); }
+  #path-count { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+  /* ---- Payload inspector ---- */
+  details.payload-inspector { margin-top: 8px; }
+  details.payload-inspector summary {
+    font-size: 11px; color: var(--info); cursor: pointer;
+    user-select: none; list-style: none; display: inline-flex; align-items: center; gap: 4px;
+  }
+  details.payload-inspector summary::before { content: "▶"; font-size: 9px; }
+  details.payload-inspector[open] summary::before { content: "▼"; }
+  .payload-box { margin-top: 6px; padding: 10px; background: var(--surface);
+                 border: 1px solid var(--border); border-radius: 6px; }
+  .payload-pre { margin: 0 0 8px; font-size: 11px; font-family: ui-monospace, monospace;
+                 white-space: pre-wrap; word-break: break-all; max-height: 160px;
+                 overflow-y: auto; color: #c9d1d9; }
+  .payload-meta { font-size: 11px; color: var(--muted); display: flex;
+                  align-items: center; gap: 10px; flex-wrap: wrap; }
+  .copy-btn { font-size: 11px; padding: 3px 10px; border: 1px solid var(--border);
+              border-radius: 4px; background: var(--surface); cursor: pointer;
+              color: var(--primary); }
+  .copy-btn:hover { border-color: var(--primary); }
+  .copy-btn.copied { color: var(--low); border-color: var(--low); }
+
+  /* ---- Remediation ---- */
+  .remediation .card { border-left: 4px solid var(--accent); }
+
+  /* ---- Footer ---- */
+  .footer { color: var(--muted); font-size: 12px; margin-top: 48px;
+            padding-top: 16px; border-top: 1px solid var(--border); text-align: center; }
+  .footer strong { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="brand">Pwn<span>Graph</span></div>
+  <div class="nav-meta">
+    {{ target_name }}
+    &middot; {{ paths|length }} path{{ '' if paths|length == 1 else 's' }}
+    &middot; {{ findings|length }} finding{{ '' if findings|length == 1 else 's' }}
+    {% if asr_overall and asr_overall.trials %}
+    &middot; ASR {{ (asr_overall.asr * 100)|round|int }}%
+    {% endif %}
+  </div>
+  <div class="nav-spacer"></div>
+  <button class="nav-btn secondary" onclick="window.print()">&#x2913; Export PDF</button>
+  <a class="nav-btn" href="attack_graph.html" target="_blank">&#x2197; Open Graph</a>
+</nav>
+
+<div class="content">
+<header style="margin-bottom: 24px;">
+  <h1>Scan Report</h1>
+  <div class="meta">Target: <strong style="color:var(--text)">{{ target_name }}</strong></div>
+</header>
+
+{% if findings or paths %}
+<section class="exec-summary">
+  <h2>Executive Summary</h2>
+  <p>
+    PwnGraph scanned <strong>{{ target_name }}</strong> using
+    {{ attack_class_counts|length }} attack class{{ '' if attack_class_counts|length == 1 else 'es' }}
+    and discovered <strong>{{ paths|length }} dangerous attack path{{ '' if paths|length == 1 else 's' }}</strong>
+    leading to {{ findings|length }} confirmed finding{{ '' if findings|length == 1 else 's' }}.
+    {% if asr_overall and asr_overall.trials %}
+    The overall Attack Success Rate was
+    <strong>{{ (asr_overall.asr * 100)|round|int }}%</strong>
+    ({{ asr_overall.successes }}/{{ asr_overall.trials }} runs,
+    95% CI {{ (asr_overall.wilson_low * 100)|round|int }}–{{ (asr_overall.wilson_high * 100)|round|int }}%),
+    confirming the agent is <strong>reliably exploitable</strong> and not just occasionally susceptible.
+    {% endif %}
+  </p>
+  {% if findings %}
+  <p><strong>Critical findings:</strong>
+  {% for f in findings if f.severity.value == 'critical' %}
+    <span class="badge critical">{{ f.attack_class }}</span>
+    {% if f.owasp %}<span class="meta" style="font-size:11px">[{{ f.owasp|join(', ') }}]</span>{% endif %}
+    {% if f.cvss_vector %}({{ f.cvss_score }}){% endif %}
+  {% else %}
+    None at Critical level.
+  {% endfor %}
+  </p>
+  {% set covered = owasp_coverage|selectattr('status','equalto','detected')|map(attribute='id')|list %}
+  {% if covered %}
+  <p><strong>OWASP LLM categories confirmed:</strong>
+    {% for oid in covered %}<span class="badge" style="background:#0B3D91;margin-right:3px">{{ oid }}</span>{% endfor %}
+  </p>
+  {% endif %}
+  <p><strong>Recommended immediate action:</strong>
+  {% if findings[0].severity.value in ('critical','high') %}
+    <em>{{ findings[0].remediation[:200] }}…</em>
+  {% else %}
+    Review all confirmed findings and apply the remediation guidance below.
+  {% endif %}
+  </p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section>
+  <h2>Summary</h2>
+  <div class="cards">
+    <div class="card"><div class="label">Dangerous Paths</div><div class="value">{{ paths|length }}</div></div>
+    <div class="card"><div class="label">Confirmed Findings</div><div class="value">{{ findings|length }}</div></div>
+    <div class="card"><div class="label">Critical</div>
+      <div class="value" style="color: var(--crit)">{{ severity_counts.get('critical', 0) }}</div></div>
+    <div class="card"><div class="label">High</div>
+      <div class="value" style="color: var(--high)">{{ severity_counts.get('high', 0) }}</div></div>
+    <div class="card"><div class="label">Medium</div>
+      <div class="value" style="color: var(--med)">{{ severity_counts.get('medium', 0) }}</div></div>
+    {% if asr_overall and asr_overall.trials %}
+    <div class="card" title="Successful adversarial runs / total trials, with a 95% Wilson confidence interval.">
+      <div class="label">Attack Success Rate</div>
+      <div class="value">{{ (asr_overall.asr * 100)|round|int }}%</div>
+      <div class="meta" style="font-size:11px">
+        {{ asr_overall.successes }}/{{ asr_overall.trials }} runs
+        &middot; 95% CI {{ (asr_overall.wilson_low * 100)|round|int }}–{{ (asr_overall.wilson_high * 100)|round|int }}%
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if asr_by_class %}
+  <h3>Attack success rate by class
+    <span class="meta" style="font-weight:normal;font-size:12px">— reliability across repeated trials (LLMs are stochastic)</span>
+  </h3>
+  <table>
+    <thead><tr><th>Attack class</th><th>ASR</th><th>95% CI</th><th>Successes / trials</th><th>Max severity</th><th>Weak echoes</th></tr></thead>
+    <tbody>
+    {% for cls, b in asr_by_class.items() %}
+      <tr>
+        <td>{{ cls }}</td>
+        <td><strong>{{ (b.asr * 100)|round|int }}%</strong></td>
+        <td>{{ (b.wilson_low * 100)|round|int }}–{{ (b.wilson_high * 100)|round|int }}%</td>
+        <td>{{ b.successes }} / {{ b.trials }}</td>
+        <td><span class="badge {{ b.max_severity }}">{{ b.max_severity }}</span></td>
+        <td>{{ b.weak_echoes }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="meta" style="font-size:12px">
+    <strong>ASR</strong> = confirmed-successful runs ÷ total trials. A "weak echo" is a canary
+    reflected in the final answer only (possible benign quoting) — counted separately, never as a success.
+  </p>
+  {% endif %}
+
+  {% if tool_inventory %}
+  <h3>Target tool inventory</h3>
+  <div class="pills">
+    {% for t in tool_inventory %}<span>{{ t }}</span>{% endfor %}
+  </div>
+  {% endif %}
+
+  {% if edge_type_counts %}
+  <h3>Adversarial edge mix</h3>
+  <div class="pills">
+    {% for k, v in edge_type_counts.items() %}<span>{{ k }} × {{ v }}</span>{% endfor %}
+  </div>
+  {% endif %}
+
+  {% if tool_risk %}
+  <h3>Tool risk ranking <span class="meta" style="font-weight:normal;font-size:12px">— paths through each tool</span></h3>
+  <div class="tool-risk-chart">
+    {% set max_count = tool_risk[0][1] %}
+    {% for tool_name, count in tool_risk %}
+    <div class="risk-row">
+      <div class="risk-label" title="{{ tool_name }}">{{ tool_name }}</div>
+      <div class="risk-bar-bg">
+        <div class="risk-bar" style="width: {{ (count / max_count * 100)|int }}%"></div>
+      </div>
+      <div class="risk-count">{{ count }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+{% if owasp_coverage %}
+<section>
+  <h2>OWASP LLM Top 10 (2025) — Coverage</h2>
+  <p class="meta" style="margin-bottom:10px">
+    PwnGraph is a runtime, agentic security tool. It tests the behavioral subset
+    of the OWASP LLM Top 10 by executing the agent and observing multi-hop
+    behavior. Categories that are static (supply chain), training-time (model
+    poisoning), or quality-based (misinformation) are <strong>out of scope by
+    design</strong> — and marked as such below rather than faked.
+  </p>
+  <table>
+    <thead><tr><th style="width:80px">ID</th><th>Category</th><th style="width:120px">Status</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for r in owasp_coverage %}
+      <tr>
+        <td><code>{{ r.id }}</code></td>
+        <td>{{ r.name }}</td>
+        <td>
+          {% if r.status == 'detected' %}
+            <span class="badge critical">detected ({{ r.count }})</span>
+          {% elif r.status == 'tested' %}
+            <span class="badge" style="background:#1E8449">tested</span>
+          {% elif r.status == 'partial' %}
+            <span class="badge medium">partial</span>
+          {% else %}
+            <span class="badge" style="background:#9CA3AF">out of scope</span>
+          {% endif %}
+        </td>
+        <td style="font-size:12px;color:#4B5563">{{ r.detail }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="meta" style="font-size:11px;margin-top:8px">
+    <strong>detected</strong> = a confirmed finding maps here ·
+    <strong>tested</strong> = exercised, no finding this run ·
+    <strong>partial</strong> = only a slice is reachable ·
+    <strong>out of scope</strong> = not a runtime-fuzzing concern (rationale shown).
+  </p>
+</section>
+{% endif %}
+
+{% if paths %}
+<section>
+  <h2>Dangerous attack paths</h2>
+
+  <div class="filter-bar">
+    <label>Severity
+      <select id="sev-filter" onchange="filterPaths()">
+        <option value="">All</option>
+        <option value="critical">Critical</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+    </label>
+    <label>Confidence
+      <select id="conf-filter" onchange="filterPaths()">
+        <option value="">All</option>
+        <option value="high">High only</option>
+        <option value="low">Low only</option>
+      </select>
+    </label>
+    <label>Attack class
+      <select id="class-filter" onchange="filterPaths()">
+        <option value="">All</option>
+        <option value="indirect_injection">Indirect Injection</option>
+        <option value="tool_poisoning">Tool Poisoning</option>
+      </select>
+    </label>
+    <span id="path-count"></span>
+  </div>
+
+  <table id="paths-table">
+    <thead>
+      <tr><th>#</th><th>Severity</th><th>Confidence</th><th>Class</th><th>Hops</th><th>Chain &amp; Payload</th></tr>
+    </thead>
+    <tbody>
+      {% for p in paths %}
+      {% set extra = path_extras.get(p.path_id, {}) %}
+      {% set ac = extra.get('attack_class', 'unknown') %}
+      <tr data-sev="{{ p.severity.value }}" data-conf="{{ p.confidence }}" data-class="{{ ac }}">
+        <td>{{ loop.index }}</td>
+        <td><span class="badge {{ p.severity.value }}">{{ p.severity.value }}</span></td>
+        <td>{{ p.confidence }}{% if p.confidence == 'low' %} <span class="meta">(verify)</span>{% endif %}</td>
+        <td><span class="meta">{{ ac.replace('_', ' ') }}</span></td>
+        <td>{{ p.hop_count }}</td>
+        <td>
+          <div class="path-chain">
+            {% for ev in p.events %}
+              <strong>{{ ev.node_type.value }}</strong>({{ ev.name }}){% if not loop.last %}<span class="arrow">→</span>{% endif %}
+            {% endfor %}
+          </div>
+          <div class="meta">via: {{ p.edge_types | map(attribute='value') | reject('equalto', 'normal_flow') | unique | join(', ') }}</div>
+          {% set delivery = extra.get('delivery_input', '') %}
+          {% if delivery %}
+          <details class="payload-inspector">
+            <summary>Show delivery input</summary>
+            <div class="payload-box">
+              <pre class="payload-pre">{{ delivery }}</pre>
+              <div class="payload-meta">
+                <button class="copy-btn" onclick="copyPayload(this)" data-payload="{{ delivery }}">Copy payload</button>
+                {% set canary = extra.get('canary', '') %}
+                {% if canary %}<span>Canary: <code>{{ canary }}</code></span>{% endif %}
+                {% if extra.get('payload_id') %}<span class="meta">ID: <code>{{ extra.get('payload_id', '') }}</code></span>{% endif %}
+              </div>
+            </div>
+          </details>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% else %}
+<section>
+  <h2>Dangerous attack paths</h2>
+  <p class="meta">No dangerous paths discovered. This may mean: (a) the target is well-defended for the configured attack classes, (b) the fuzzer iterations were too few, or (c) tools exposed by the target don't match the attack-class delivery patterns. Increase <code>iterations</code> and re-run.</p>
+</section>
+{% endif %}
+
+{% if findings %}
+<section>
+  <h2>Confirmed findings</h2>
+  {% for f in findings %}
+  <div class="finding-card" style="border-left: 4px solid {% if f.severity.value == 'critical' %}var(--crit){% elif f.severity.value == 'high' %}var(--high){% elif f.severity.value == 'medium' %}var(--med){% else %}var(--low){% endif %}">
+    <h3 style="margin-top:0">
+      {{ f.title }}
+      <span class="badge {{ f.severity.value }}">{{ f.severity.value }}</span>
+      {% if f.cvss_score %}<span class="badge" style="background:#374151;margin-left:4px">CVSS {{ f.cvss_score }}</span>{% endif %}
+    </h3>
+    <div class="meta" style="margin-bottom:8px">
+      {{ f.target_system }}
+      &middot; <strong>{{ f.attack_class }}</strong>
+      &middot; Finding ID: <code>{{ f.finding_id }}</code>
+    </div>
+    {% if f.owasp or f.cwe %}
+    <div style="margin-bottom:8px">
+      {% for oid in f.owasp %}
+      <span class="badge" style="background:#0B3D91;margin-right:4px">{{ oid }}</span>
+      {% endfor %}
+      {% if f.owasp %}<span class="meta" style="font-size:11px">OWASP LLM 2025</span>{% endif %}
+      {% if f.cwe %}
+      <span class="badge" style="background:#374151;margin-left:8px;margin-right:4px">{{ f.cwe }}</span>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if f.cvss_vector %}
+    <div class="cvss-vector">{{ f.cvss_vector }}</div>
+    {% endif %}
+
+    {% if f.evidence.get('attack_success_rate') is not none %}
+    <p style="font-size:12px;color:#374151;margin:6px 0">
+      <strong>Attack Success Rate:</strong>
+      {{ (f.evidence.attack_success_rate * 100)|round|int }}%
+      ({{ f.evidence.successes }}/{{ f.evidence.trials }} trials
+      &middot; 95% CI {{ (f.evidence.asr_ci95[0] * 100)|round|int }}–{{ (f.evidence.asr_ci95[1] * 100)|round|int }}%)
+    </p>
+    {% endif %}
+
+    {% if f.paths %}
+    <p style="font-size:12px;margin:8px 0"><strong>Attack chain:</strong></p>
+    <div class="path-chain" style="margin:4px 0 10px 0;overflow-x:auto;white-space:nowrap">
+      {% for ev in f.paths[0].events %}
+        <span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;margin:2px;
+          background:{% if ev.node_type.value == 'user_input' %}#E74C3C{% elif ev.node_type.value == 'tool_call' %}#3498DB{% elif ev.node_type.value == 'tool_result' %}#F1C40F{% elif ev.node_type.value == 'final_answer' %}#2ECC71{% elif ev.node_type.value == 'dangerous' %}#C0392B{% else %}#95A5A6{% endif %};
+          color:{% if ev.node_type.value == 'tool_result' %}#1a1a1a{% else %}white{% endif %}">
+          {{ ev.node_type.value.replace('_',' ') }}{% if ev.name and ev.name != 'user' and ev.name != 'agent' %}: {{ ev.name[:24] }}{% endif %}
+        </span>
+        {% if not loop.last %}<span class="arrow">→</span>{% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <p><strong>Summary.</strong> {{ f.summary }}</p>
+    <p><strong>Impact.</strong> {{ f.impact }}</p>
+    <details style="margin:8px 0">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px">Steps to reproduce</summary>
+      <ol style="margin-top:8px">{% for s in f.steps_to_reproduce %}<li style="margin-bottom:4px">{{ s }}</li>{% endfor %}</ol>
+    </details>
+    <p><strong>Remediation.</strong> {{ f.remediation }}</p>
+    {% if f.references %}
+    <div style="margin-top:8px;font-size:12px;color:#6B7280">
+      <strong>References:</strong>
+      {% for ref in f.references %}
+      <a href="{{ ref }}" target="_blank" rel="noopener"
+         style="color:#3B82F6;margin-left:6px;word-break:break-all">{{ ref }}</a>{% if not loop.last %} &middot;{% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if remediation %}
+<section class="remediation">
+  <h2>Remediation guidance</h2>
+  <div class="cards">
+    {% for r in remediation %}
+    <div class="card">
+      <h3 style="margin-top: 0">{{ r.title }}</h3>
+      <p style="margin: 0">{{ r.body }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+</div><!-- /content -->
+<div class="footer">
+  Generated by <strong>PwnGraph</strong> · Dynamic attack graph discovery for AI agent pipelines.<br/>
+  <a href="attack_graph.html" target="_blank" style="color:var(--primary)">Open interactive graph →</a>
+</div>
+
+<script>
+  function filterPaths() {
+    const sev  = document.getElementById('sev-filter').value;
+    const conf = document.getElementById('conf-filter').value;
+    const cls  = document.getElementById('class-filter').value;
+    let visible = 0;
+    document.querySelectorAll('#paths-table tbody tr').forEach(row => {
+      const show = (!sev  || row.dataset.sev  === sev)
+                && (!conf || row.dataset.conf === conf)
+                && (!cls  || row.dataset.class === cls);
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    const total = {{ paths|length }};
+    const el = document.getElementById('path-count');
+    el.textContent = visible === total ? `${total} paths` : `${visible} of ${total} paths`;
+    el.style.color = visible < total ? 'var(--accent)' : 'var(--muted)';
+  }
+
+  function copyPayload(btn) {
+    const text = btn.dataset.payload;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = 'Copy payload';
+        btn.classList.remove('copied');
+      }, 1800);
+    }).catch(() => {
+      /* fallback: select the pre block above */
+      const pre = btn.closest('.payload-box').querySelector('.payload-pre');
+      const range = document.createRange();
+      range.selectNodeContents(pre);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+    });
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    const total = {{ paths|length }};
+    document.getElementById('path-count').textContent = `${total} path${total === 1 ? '' : 's'}`;
+  });
+</script>
+</body>
+</html>
