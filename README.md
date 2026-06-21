@@ -464,10 +464,15 @@ if pg.risk_grade()["grade"] in ("D", "F"):
 
 PwnGraph currently supports **LangChain** and **LangGraph**. The core engine (Fuzzer, Oracle, Graph Builder, Reporter) is framework-agnostic, so new coverage is additive:
 
-- **v2 — CrewAI and AutoGen** connectors
-- **v2 — Model Context Protocol (MCP)** support
-- **v2 — Interactive proxy-based interception** for live attack manipulation
-- More integration templates (Jira, Notion, AWS, GitLab)
+Future Work
+
+- CrewAI support
+- AutoGen support
+- MCP support
+- OpenAI Agents SDK support
+- Semantic attack clustering
+- Multi-agent attack graph reconstruction
+- Distributed scanning
 
 ---
 
