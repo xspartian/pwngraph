@@ -34,20 +34,42 @@ Static analysis can't catch this. The danger doesn't live in the code; it lives 
 ## How it works
 
 ```
-   ①  CONNECT          ②  FUZZ            ③  TRACE           ④  JUDGE            ⑤  REPORT
-┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│  attach to   │   │  deliver     │   │  record every│   │  5-signal    │   │  attack graph│
-│  your agent, │──►│  canary-     │──►│  tool call,  │──►│  behavioral  │──►│  + findings  │
-│  map its     │   │  tagged      │   │  result, and │   │  oracle: did │   │  + CVSS      │
-│  tools       │   │  payloads    │   │  decision    │   │  it bite?    │   │  + SARIF     │
-└──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
+Your Agent
+    │
+    ▼
+1. CONNECT       PwnGraph attaches to your agent and discovers all its tools.
+    │
+    ▼
+2. BASELINE      PwnGraph runs a few normal (benign) inputs against the agent
+                 and records what "normal behavior" looks like — which tools
+                 get called, what the outputs look like, etc.
+    │
+    ▼
+3. FUZZ          PwnGraph generates adversarial payloads for each attack class
+                 (prompt injection, shell injection, file read, etc.) and
+                 delivers them to the agent one by one.
+    │
+    ▼
+4. TRACE         While each payload runs, PwnGraph captures every single event:
+                 every tool call, every input, every output, every LLM response.
+    │
+    ▼
+5. DETECT        The behavioral oracle compares what the agent did on the
+                 adversarial input vs. what it did on benign input. It looks for
+                 5 signals that indicate a successful attack.
+    │
+    ▼
+6. GRAPH         All traces are assembled into an attack graph — a visual map
+                 showing how attacker input flowed through the agent's tools
+                 all the way to a dangerous outcome.
+    │
+    ▼
+7. REPORT        A full HTML report is generated with findings ranked by
+                 severity, CVSS scores, OWASP tags, ASR percentages, steps to
+                 reproduce, and remediation advice.
 ```
 
-1. **Connect**: PwnGraph attaches to your running agent and enumerates its tools, classifying each as a *data source* (where injection enters) or an *action sink* (where damage happens).
-2. **Fuzz**: It generates adversarial payloads across 6 attack classes, each carrying a unique **canary** token so success is unambiguous.
-3. **Trace**: Every tool call, tool result, and agent decision is captured as a typed event, with the canary propagated end-to-end.
-4. **Judge**: A behavioral oracle checks five independent signals to decide whether the attack actually worked, not whether the words appeared, but whether the *behavior* changed.
-5. **Report**: Successful chains become an interactive attack graph plus a severity-ranked report with CVSS, OWASP mapping, reproduction steps, and remediation.
+
 
 ---
 
