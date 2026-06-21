@@ -103,13 +103,6 @@ flowchart TB
     classDef out fill:#0d0d0d,stroke:#555,color:#bbbbbb;
 ```
 
-| Stage | Component | Responsibility |
-|---|---|---|
-| 1 | **Connector** | Attaches to the live agent and enumerates its tools, tagging each as a data source or an action sink |
-| 2 | **Fuzzer** | Generates adversarial payloads across 6 attack classes, each carrying a unique canary token |
-| 3 | **Tracer** | Hooks the agent's callbacks and records every tool call, result, and decision as a typed event |
-| 4 | **Oracle** | Judges each run against 5 behavioral signals to confirm a real, reproducible compromise |
-| 5 | **Graph Builder → Reporter** | Assembles confirmed chains into a typed attack graph and renders the report, SARIF, and ASR outputs |
 
 ---
 
@@ -242,90 +235,90 @@ pwngraph scan --target adapter.py:build_agent --attacks all --out ./out
 
 ## Usage Examples
 
-**3.1 See the tool surface without attacking**
+**3.1 See the tool surface without attacking** : Lists every tool PwnGraph can reach. Fires nothing.
 ```bash
 pwngraph scan --target adapter.py:build_agent --dry-run
 ```
-Lists every tool PwnGraph can reach. Fires nothing.
 
-**3.2 Run one attack class**
+
+**3.2 Run one attack class** : Tests only shell injection instead of all six.
 ```bash
 pwngraph scan --target adapter.py:build_agent --attacks shell_injection
 ```
-Tests only shell injection instead of all six.
 
-**3.3 Run multiple classes**
+
+**3.3 Run multiple classes** : Comma-separated. Runs just the classes you name.
 ```bash
 pwngraph scan --target adapter.py:build_agent --attacks shell_injection,file_read_injection
 ```
-Comma-separated. Runs just the classes you name.
 
-**3.4 Control breadth (more payloads per class)**
+
+**3.4 Control breadth (more payloads per class)** : `--iterations` = how many distinct payloads per class. Higher = wider coverage.
 ```bash
 pwngraph scan --target adapter.py:build_agent --iterations 50
 ```
-`--iterations` = how many distinct payloads per class. Higher = wider coverage.
 
-**3.5 Control depth (statistical confidence)**
+
+**3.5 Control depth (statistical confidence)** : `--trials` = how many times each payload is re-fired. `>1` gives an ASR with a 95% confidence interval. Use this for honest numbers.
 ```bash
 pwngraph scan --target adapter.py:build_agent --trials 5
 ```
-`--trials` = how many times each payload is re-fired. `>1` gives an ASR with a 95% confidence interval. Use this for honest numbers.
 
-**3.6 Full statistical run**
+
+**3.6 Full statistical run** : 25 payloads per class, each fired 5 times. Wide and statistically sound.
 ```bash
 pwngraph scan --target adapter.py:build_agent --iterations 25 --trials 5
 ```
-25 payloads per class, each fired 5 times. Wide and statistically sound.
 
-**3.7 Use a preset profile**
+
+**3.7 Use a preset profile** : Presets: `quick`, `full`, `owasp-llm`, `paranoid`. One word instead of many flags.
 ```bash
 pwngraph scan --target adapter.py:build_agent --profile quick
 ```
-Presets: `quick`, `full`, `owasp-llm`, `paranoid`. One word instead of many flags.
 
-**3.8 Run a custom payload alongside built-ins**
+
+**3.8 Run a custom payload alongside built-ins** : `--payload` = add your own YAML payload to the built-in classes.
 ```bash
 pwngraph scan --target adapter.py:build_agent --payload my_attack.yaml
 ```
-`--payload` = add your own YAML payload to the built-in classes.
 
-**3.9 Run ONLY your custom payloads**
+
+**3.9 Run ONLY your custom payloads** : `--payload-only` = skip the built-ins, run just your YAML.
 ```bash
 pwngraph scan --target adapter.py:build_agent --payload my_attack.yaml --payload-only
 ```
-`--payload-only` = skip the built-ins, run just your YAML.
 
-**3.10 Run a whole template category**
+
+**3.10 Run a whole template category** : Point `--payload` at a folder to run every template in it.
 ```bash
 pwngraph scan --target adapter.py:build_agent \
               --payload pwngraph-templates/attacks/tool_poisoning/ --payload-only
 ```
-Point `--payload` at a folder to run every template in it.
 
-**3.11 Reproducible run**
+
+**3.11 Reproducible run** : `--seed` = fix the randomness. Same seed = same scan every time.
 ```bash
 pwngraph scan --target adapter.py:build_agent --seed 42
 ```
-`--seed` = fix the randomness. Same seed = same scan every time.
 
-**3.12 Cost guard**
+
+**3.12 Cost guard** : `--max-calls` = hard cap on agent runs. Stops runaway API cost.
 ```bash
 pwngraph scan --target adapter.py:build_agent --max-calls 200
 ```
-`--max-calls` = hard cap on agent runs. Stops runaway API cost.
 
-**3.13 Fix a wrong input key**
+
+**3.13 Fix a wrong input key** : `--input-key` = override if your agent uses `question`/`query` instead of `input`.
 ```bash
 pwngraph scan --target adapter.py:build_agent --input-key question
 ```
-`--input-key` = override if your agent uses `question`/`query` instead of `input`.
 
-**3.14 CI-friendly (no progress bar)**
+
+**3.14 CI-friendly (no progress bar)** : Disables the progress bar for clean CI logs.
 ```bash
 pwngraph scan --target adapter.py:build_agent --no-progress
 ```
-Disables the progress bar for clean CI logs.
+
 
 ---
 
