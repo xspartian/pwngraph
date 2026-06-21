@@ -241,10 +241,12 @@ pwngraph scan --target adapter.py:build_agent --dry-run
 ```
 
 
+
 **3.2 Run one attack class** : Tests only shell injection instead of all six.
 ```bash
 pwngraph scan --target adapter.py:build_agent --attacks shell_injection
 ```
+
 
 
 **3.3 Run multiple classes** : Comma-separated. Runs just the classes you name.
