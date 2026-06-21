@@ -17,7 +17,7 @@
 
 ---
 
-PwnGraph is a comprehensive runtime security testing and exploitation framework for AI agents, built for red team operations, LLM security assessments, and penetration testing. It attaches to a live agent, fuzzes it with adversarial payloads across six attack classes, traces every tool call as it runs, and reconstructs the multi-hop attack paths that succeed into an interactive attack graph, proving real prompt-injection impact with canary tokens instead of guessing from model text.
+PwnGraph is a runtime security testing and exploitation framework for AI agents, built for red team operations, LLM security assessments, and penetration testing. It attaches to a live agent, fuzzes it with adversarial payloads across six attack classes, traces every tool call as it runs, and reconstructs the multi-hop attack paths that succeed into an interactive attack graph — proving real prompt-injection impact with canary tokens instead of guessing from model text.
 
 ---
 
@@ -69,8 +69,6 @@ Your Agent
                  reproduce, and remediation advice.
 ```
 
-
-
 ---
 
 ## Architecture
@@ -105,13 +103,6 @@ flowchart TB
     classDef out fill:#0d0d0d,stroke:#555,color:#bbbbbb;
 ```
 
-| Stage | Component | Responsibility |
-|---|---|---|
-| 1 | **Connector** | Attaches to the live agent and enumerates its tools, tagging each as a data source or an action sink |
-| 2 | **Fuzzer** | Generates adversarial payloads across 6 attack classes, each carrying a unique canary token |
-| 3 | **Tracer** | Hooks the agent's callbacks and records every tool call, result, and decision as a typed event |
-| 4 | **Oracle** | Judges each run against 5 behavioral signals to confirm a real, reproducible compromise |
-| 5 | **Graph Builder → Reporter** | Assembles confirmed chains into a typed attack graph and renders the report, SARIF, and ASR outputs |
 
 ---
 
@@ -163,10 +154,18 @@ Then open `results/attack_graph.html` to click through the attack chains, or `re
 
 ---
 
-## Install
+## Quick-Start Guide
+
+### 1. Installation
 
 ```bash
 pip install pwngraph
+```
+
+Verify your environment:
+
+```bash
+pwngraph doctor
 ```
 
 <details>
@@ -180,24 +179,15 @@ pwngraph doctor   # verify environment + LLM credentials
 ```
 </details>
 
----
-
-## Quick start on your own agent
-
-PwnGraph scans **any** LangChain or LangGraph agent through a small **adapter**, a file with a no-argument `build_agent()` function that returns your live agent. You don't have to write it by hand.
-
-### 1. Generate the adapter automatically
-
-Point `pwngraph init` at your project. With `OPENAI_API_KEY` set, it reads your agent's source, identifies the framework, LLM, and every tool with GPT-4o-mini, and writes a ready-to-scan `adapter.py`, no manual edits:
+### 2. Generate an adapter
 
 ```bash
-export OPENAI_API_KEY=sk-...
 cd your-agent-repo
-pwngraph init                                # auto-detects your agent → writes adapter.py
-# pwngraph init --target path/to/agent.py    # if the wrong file is detected
+export OPENAI_API_KEY=sk-...
+pwngraph init
 ```
 
-> No API key? `pwngraph init` falls back to an interactive template you fill in by hand.
+Auto-detects your agent and writes `adapter.py`. No key? It drops an interactive template you fill in by hand.
 
 <details>
 <summary>What a generated <code>adapter.py</code> looks like</summary>
@@ -213,27 +203,111 @@ def build_agent():
     agent = create_openai_tools_agent(llm, tools, prompt)
     return AgentExecutor(agent=agent, tools=tools)
 ```
+
 `build_agent()` must take no arguments and return an `AgentExecutor` or a compiled LangGraph.
 </details>
 
-### 2. Verify, then scan
+### 3. First scan
 
 ```bash
-# See what PwnGraph can reach (no attacks run)
-pwngraph scan --target adapter.py:build_agent --dry-run
-
-# Run the full assessment
 pwngraph scan --target adapter.py:build_agent --attacks all --out ./out
 ```
-
-The input key (`input`, `question`, `query`, …) is auto-detected; override with `--input-key` if your agent is unusual.
 
 > [!WARNING]
 > PwnGraph runs your agent's **real tools** with attacker-controlled inputs and makes **real LLM calls** (API cost). Always point it at a non-production instance, and mock any tool with real side effects (email, payments, writes) first.
 
 ---
 
-## Command reference
+## Usage Examples
+
+**See the tool surface without attacking:**
+```bash
+pwngraph scan --target adapter.py:build_agent --dry-run
+```
+Lists every tool PwnGraph can reach. Fires nothing.
+
+**Run one attack class:**
+```bash
+pwngraph scan --target adapter.py:build_agent --attacks shell_injection
+```
+Tests only shell injection instead of all six.
+
+**Run multiple classes:**
+```bash
+pwngraph scan --target adapter.py:build_agent --attacks shell_injection,file_read_injection
+```
+Comma-separated. Runs just the classes you name.
+
+**Control breadth (more payloads per class):**
+```bash
+pwngraph scan --target adapter.py:build_agent --iterations 50
+```
+`--iterations` = how many distinct payloads per class. Higher = wider coverage.
+
+**Control depth (statistical confidence):**
+```bash
+pwngraph scan --target adapter.py:build_agent --trials 5
+```
+`--trials` = how many times each payload is re-fired. `>1` gives an ASR with a 95% confidence interval. Use this for honest numbers.
+
+**Full statistical run:**
+```bash
+pwngraph scan --target adapter.py:build_agent --iterations 25 --trials 5
+```
+25 payloads per class, each fired 5 times. Wide *and* statistically sound.
+
+**Use a preset profile:**
+```bash
+pwngraph scan --target adapter.py:build_agent --profile quick
+```
+Presets: `quick`, `full`, `owasp-llm`, `paranoid`. One word instead of many flags.
+
+**Run a custom payload alongside built-ins:**
+```bash
+pwngraph scan --target adapter.py:build_agent --payload my_attack.yaml
+```
+`--payload` = add your own YAML payload to the built-in classes.
+
+**Run ONLY your custom payloads:**
+```bash
+pwngraph scan --target adapter.py:build_agent --payload my_attack.yaml --payload-only
+```
+`--payload-only` = skip the built-ins, run just your YAML.
+
+**Run a whole template category:**
+```bash
+pwngraph scan --target adapter.py:build_agent \
+              --payload pwngraph-templates/attacks/tool_poisoning/ --payload-only
+```
+Point `--payload` at a folder to run every template in it.
+
+**Reproducible run:**
+```bash
+pwngraph scan --target adapter.py:build_agent --seed 42
+```
+`--seed` = fix the randomness. Same seed = same scan every time.
+
+**Cost guard:**
+```bash
+pwngraph scan --target adapter.py:build_agent --max-calls 200
+```
+`--max-calls` = hard cap on agent runs. Stops runaway API cost.
+
+**Fix a wrong input key:**
+```bash
+pwngraph scan --target adapter.py:build_agent --input-key question
+```
+`--input-key` = override if your agent uses `question`/`query` instead of `input`.
+
+**CI-friendly (no progress bar):**
+```bash
+pwngraph scan --target adapter.py:build_agent --no-progress
+```
+Disables the progress bar for clean CI logs.
+
+---
+
+## Command Reference
 
 | Command | Purpose |
 |---|---|
@@ -268,7 +342,7 @@ The input key (`input`, `question`, `query`, …) is auto-detected; override wit
 
 ---
 
-## Attack classes
+## Attack Classes
 
 PwnGraph ships with a curated corpus of payloads across six classes, every one mapped to the OWASP LLM Top 10 (2025):
 
@@ -287,7 +361,7 @@ pwngraph list-attacks   # full descriptions in your terminal
 
 ---
 
-## Attack templates
+## Attack Templates
 
 Beyond the built-in fuzzer, PwnGraph reads **Nuclei-style YAML templates**: a community-extensible payload library in [`pwngraph-templates/`](pwngraph-templates/). Each template is a single, self-documenting YAML (severity, CVSS, OWASP tag, payload, and matchers) that runs with `--payload`, no code required:
 
@@ -312,7 +386,7 @@ Found a new agent attack? You can add it as a YAML template, no Python required.
 
 ---
 
-## The behavioral oracle
+## The Behavioral Oracle
 
 The hard part of fuzzing an agent isn't sending payloads, it's *knowing when one worked*. PwnGraph doesn't grep for strings; it watches behavior across **five signals**:
 
@@ -328,7 +402,7 @@ A finding is only raised when behavior genuinely shifted under attack, which is 
 
 ---
 
-## What you get
+## What You Get
 
 Every scan writes a full set of artifacts to the output directory:
 
@@ -369,7 +443,18 @@ if pg.risk_grade()["grade"] in ("D", "F"):
 
 ---
 
-## Responsible use
+## Roadmap
+
+PwnGraph currently supports **LangChain** and **LangGraph**. The core engine (Fuzzer, Oracle, Graph Builder, Reporter) is framework-agnostic, so new coverage is additive:
+
+- **v2 — CrewAI and AutoGen** connectors
+- **v2 — Model Context Protocol (MCP)** support
+- **v2 — Interactive proxy-based interception** for live attack manipulation
+- More integration templates (Jira, Notion, AWS, GitLab)
+
+---
+
+## Responsible Use
 
 PwnGraph is for **authorized security testing only**: your own agents, agents you have written permission to test, or isolated labs like the bundled `examples/lab_agent/`. Don't point it at systems you don't own or aren't permitted to test.
 
@@ -386,7 +471,7 @@ Contributions are welcome, from new [attack templates](#attack-templates) (YAML,
 ```bibtex
 @misc{pwngraph2026,
   title  = {PwnGraph: The Runtime Attack Graph Engine for AI Agents},
-  author = {Suyog},
+  author = {Suyog Patil},
   year   = {2026},
   url    = {https://github.com/xspartian/pwngraph},
 }
