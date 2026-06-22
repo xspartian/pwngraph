@@ -501,21 +501,6 @@ if pg.risk_grade()["grade"] in ("D", "F"):
     raise SystemExit(f"Agent failed security gate: {len(pg.findings)} findings")
 ```
 
----
-
-## Roadmap
-
-PwnGraph currently supports **LangChain** and **LangGraph**. The core engine (Fuzzer, Oracle, Graph Builder, Reporter) is framework-agnostic, so new coverage is additive:
-
-Future Work
-
-- CrewAI support
-- AutoGen support
-- MCP support
-- OpenAI Agents SDK support
-- Semantic attack clustering
-- Multi-agent attack graph reconstruction
-- Distributed scanning
 
 ---
 
