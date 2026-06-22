@@ -359,34 +359,27 @@ pwngraph scan --target adapter.py:build_agent --no-progress
 
 ---
 
-## Attack Classes
-
-PwnGraph ships with a curated corpus of payloads across six attack classes, mapped to the OWASP LLM Top 10 (2025). v0.1.0 uses LLM Top 10 by default — no flag needed.
-
-A `--standard` flag is coming in v0.2.0, letting you select which security framework findings map to. ASI and MITRE ATLAS payload libraries are under active development.
-
-### Standards roadmap
-
-| Flag | Standard | Audience | Status |
-|---|---|---|---|
-| *(default)* | OWASP LLM Top 10 (2025) | Developers and AppSec teams | ✅ v0.1.0 — now |
-| `--standard asi` | OWASP Top 10 for Agentic Applications | Agent security specialists | ⚙️ v0.2.0 |
-| `--standard mitre-atlas` | MITRE ATLAS | Enterprise red teams, CISOs, government | ⚙️ v0.3.0 |
-
 ### Attack classes and mappings
+
+PwnGraph's 6 attack classes map to a subset of each standard.
+The full ASI Top 10 has 10 categories; MITRE ATLAS has 84 techniques.
+Coverage expands in v0.2.0 and v0.3.0 as new payload libraries ship.
 
 | Attack class | What it does | LLM Top 10 *(now)* | ASI Top 10 *(v0.2.0)* | MITRE ATLAS *(v0.3.0)* |
 |---|---|:---:|:---:|:---:|
-| 🪤 **Indirect Injection** | Hides instructions in content the agent *reads* (docs, web pages, files) | `LLM01` `LLM08` | `ASI01` | `AML.T0051` |
-| ☠️ **Tool Poisoning** | Corrupts a tool's *output* to hijack the agent's next move | `LLM01` `LLM05` | `ASI02` | `AML.T0054` |
-| 🔓 **Prompt Exfiltration** | Tricks the agent into leaking its system prompt and hidden rules | `LLM07` `LLM02` | `ASI01` | `AML.T0040` |
-| 💥 **Shell Injection** | Drives a shell/code tool to run attacker-chosen commands | `LLM06` `LLM05` | `ASI05` | `AML.T0051` |
-| 📂 **File Read Injection** | Path-traversal to read `/etc/passwd`, `.env`, SSH keys, configs | `LLM02` `LLM06` | `ASI02` | `AML.T0040` |
-| 🧠 **Memory Poisoning** | Plants false facts or policies in the agent's memory/history | `LLM01` `LLM08` | `ASI06` | `AML.T0054` |
+| 🪤 **Indirect Injection** | Hides instructions in content the agent *reads* | `LLM01` `LLM08` | `ASI01` | `AML.T0051` |
+| ☠️ **Tool Poisoning** | Corrupts a tool's *output* to hijack the agent | `LLM01` `LLM05` | `ASI02` | `AML.T0054` |
+| 🔓 **Prompt Exfiltration** | Leaks the agent's system prompt and hidden rules | `LLM07` `LLM02` | `ASI01` | `AML.T0040` |
+| 💥 **Shell Injection** | Drives a shell tool to run attacker-chosen commands | `LLM06` `LLM05` | `ASI05` | `AML.T0051` |
+| 📂 **File Read Injection** | Path-traversal to read sensitive files and credentials | `LLM02` `LLM06` | `ASI02` | `AML.T0040` |
+| 🧠 **Memory Poisoning** | Plants false facts or policies in the agent's memory | `LLM01` `LLM08` | `ASI06` | `AML.T0054` |
 
-```bash
-pwngraph list-attacks   # full descriptions in your terminal
-```
+**ASI coverage:** 4 of 10 categories (ASI01, ASI02, ASI05, ASI06).
+ASI03, ASI04, ASI07, ASI08, ASI09, ASI10 require multi-agent support
+or different attack vectors — planned for v0.2.0 and v0.3.0.
+
+**MITRE ATLAS coverage:** 3 core techniques shown above.
+Full technique mapping across all 84 ATLAS techniques ships in v0.3.0.
 
 ---
 
