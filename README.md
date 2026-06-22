@@ -103,22 +103,30 @@ flowchart TB
     classDef out fill:#0d0d0d,stroke:#555,color:#bbbbbb;
 ```
 
+---
+
 ## Framework Support
 
-| Adapter | Status | Interception depth |
-|---|---|---|
-| **LangChain** | ✅ Full | Callback-level — every tool call, argument, and result captured in real time |
-| **LangGraph** | ✅ Full | Event-level via `astream_events` v2 — tool calls, chains, parent run IDs |
-| **Generic** | ✅ Supported | Works against any agent conforming to the adapter contract (`build_agent()` returns a callable with a tools list) |
-| **CrewAI** | 🔧 Under development | Connector in development — full parity with LangChain/LangGraph planned |
-| **OpenAI Agents** | 🔧 Under development | Connector in development — full parity with LangChain/LangGraph planned |
-| **PydanticAI** | 🔧 Under development | Connector in development — full parity with LangChain/LangGraph planned |
-| **Google ADK** | 🔧 Under development | Connector planned — requires dedicated adapter |
-| **Microsoft AutoGen** | 🔧 Under development | Connector planned — requires dedicated adapter |
+| Adapter                | Status               | Interception depth                                                                                                |
+| ---------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **LangChain**          | ✅ Full               | Callback-level — every tool call, argument, and result captured in real time                                      |
+| **LangGraph**          | ✅ Full               | Event-level via `astream_events` v2 — tool calls, chains, parent run IDs                                          |
+| **CrewAI**             | 🔧 Under development | Connector in development — full parity with LangChain/LangGraph planned                                           |
+| **Claude Agent SDK**   | 🔧 Under development | Connector in development — full parity with LangChain/LangGraph planned                                           |
+| **OpenAI Agents SDK**  | 🔧 Under development | Connector in development — full parity with LangChain/LangGraph planned                                           |
+| **LlamaIndex**         | 🔧 Under development | Connector in development — full parity with LangChain/LangGraph planned                                           |
+| **Semantic Kernel**    | 🔧 Under development | Connector in development — full parity with LangChain/LangGraph planned                                           |
+| **Microsoft AutoGen**  | 🔧 Under development | Connector planned — requires dedicated adapter                                                                    |
+| **Google ADK**         | 🔧 Under development | Connector planned — requires dedicated adapter                                                                    |
+| **PydanticAI**         | 🔧 Under development | Connector planned — requires dedicated adapter                                                                    |
+| **Custom Adapter API** | ✅ Supported          | Works against any agent conforming to the adapter contract (`build_agent()` returns a callable with a tools list) |
 
-> **✅ Full** = runtime tool-call argument tracing via native callbacks — canary oracle, multi-hop graph, and all 6 attack classes work.
-> **✅ Supported** = works against any agent conforming to the adapter contract; interception depth depends on the agent's implementation.
-> **🔧 Under development** = not available in the current release — connector is planned but not yet shipped.
+> **✅ Full** = runtime tool-call argument tracing via native callbacks. Canary oracle, multi-hop graph generation, and all supported attack classes work.
+>
+> **✅ Supported** = works against any agent conforming to the adapter contract. Interception depth depends on the agent's implementation.
+>
+> **🔧 Under development** = not available in the current release. Connector is planned or actively being developed.
+
 
 ---
 
