@@ -361,7 +361,13 @@ pwngraph scan --target adapter.py:build_agent --no-progress
 
 ## Attack Classes
 
-PwnGraph ships with a curated corpus of payloads across six attack classes, mapped to the OWASP LLM Top 10 (2025). v0.1.0 uses LLM Top 10 by default — no flag needed.
+PwnGraph v0.1.0 ships with 6 attack classes covering the most common agent attack surface. New attack classes are added in each version as coverage expands across ASI and MITRE ATLAS categories.
+
+| Version | Attack classes | Standards covered |
+|---|---|---|
+| v0.1.0 | 6 classes | OWASP LLM Top 10 (default, no flag needed) |
+| v0.2.0 | ~9 classes | + OWASP ASI Top 10 (`--standard asi`) |
+| v0.3.0 | ~12 classes | + MITRE ATLAS (`--standard mitre-atlas`) |
 
 A `--standard` flag is coming in v0.2.0, letting you select which security framework findings map to. ASI and MITRE ATLAS payload libraries are under active development.
 
@@ -373,11 +379,9 @@ A `--standard` flag is coming in v0.2.0, letting you select which security frame
 | `--standard asi` | OWASP Top 10 for Agentic Applications | Agent security specialists | ⚙️ v0.2.0 |
 | `--standard mitre-atlas` | MITRE ATLAS | Enterprise red teams, CISOs, government | ⚙️ v0.3.0 |
 
-### Attack classes and mappings
+### Current attack classes (v0.1.0)
 
-PwnGraph's 6 attack classes map to a subset of each standard.
-The full ASI Top 10 has 10 categories; MITRE ATLAS has 84 techniques.
-Coverage expands in v0.2.0 and v0.3.0 as new payload libraries ship.
+PwnGraph's 6 attack classes map to a subset of each standard. The full ASI Top 10 has 10 categories; MITRE ATLAS has 84 techniques. Coverage expands in v0.2.0 and v0.3.0 as new attack classes and payload libraries ship.
 
 | Attack class | What it does | LLM Top 10 *(now)* | ASI Top 10 *(v0.2.0)* | MITRE ATLAS *(v0.3.0)* |
 |---|---|:---:|:---:|:---:|
@@ -388,12 +392,12 @@ Coverage expands in v0.2.0 and v0.3.0 as new payload libraries ship.
 | 📂 **File Read Injection** | Path-traversal to read `/etc/passwd`, `.env`, SSH keys, configs | `LLM02` `LLM06` | `ASI02` | `AML.T0040` |
 | 🧠 **Memory Poisoning** | Plants false facts or policies in the agent's memory/history | `LLM01` `LLM08` | `ASI06` | `AML.T0054` |
 
-> **ASI coverage (v0.2.0):** 4 of 10 categories — ASI01, ASI02, ASI05, ASI06.
-> ASI03, ASI04, ASI07, ASI08, ASI09, ASI10 require multi-agent support or
-> different attack vectors and are planned for later releases.
+> **ASI coverage (v0.2.0):** 4 of 10 categories covered by current classes — ASI01, ASI02, ASI05, ASI06.
+> New attack classes for ASI03 (Identity Abuse), ASI07 (Inter-Agent Communication),
+> and ASI08 (Cascading Failures) will be added in v0.2.0 alongside multi-agent connector support.
 
-> **MITRE ATLAS coverage (v0.3.0):** 3 core techniques shown above.
-> Full mapping across all 84 ATLAS techniques ships progressively in v0.3.0.
+> **MITRE ATLAS coverage (v0.3.0):** 3 core techniques mapped above.
+> Full technique mapping across all 84 ATLAS techniques ships progressively in v0.3.0.
 
 ```bash
 pwngraph list-attacks   # full descriptions in your terminal
