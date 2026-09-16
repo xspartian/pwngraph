@@ -102,15 +102,36 @@ def test_current_path_only_grows_on_follow_path_pivots():
     breadth exploration instead of actual chain length."""
     state = AttackState(attack_classes=["a", "b", "c"], budget=10)
     state.record_observation(
-        Observation(iteration=0, payload_id="p1", attack_class="a", success=True, confidence="high", action="explore")
+        Observation(
+            iteration=0,
+            payload_id="p1",
+            attack_class="a",
+            success=True,
+            confidence="high",
+            action="explore",
+        )
     )
     state.record_observation(
-        Observation(iteration=1, payload_id="p2", attack_class="b", success=True, confidence="high", action="try_alternative")
+        Observation(
+            iteration=1,
+            payload_id="p2",
+            attack_class="b",
+            success=True,
+            confidence="high",
+            action="try_alternative",
+        )
     )
     assert state.current_path == []
 
     state.record_observation(
-        Observation(iteration=2, payload_id="p3", attack_class="c", success=True, confidence="high", action="follow_path")
+        Observation(
+            iteration=2,
+            payload_id="p3",
+            attack_class="c",
+            success=True,
+            confidence="high",
+            action="follow_path",
+        )
     )
     assert state.current_path == ["c"]
     assert state.confidence > 0.0
@@ -118,9 +139,7 @@ def test_current_path_only_grows_on_follow_path_pivots():
 
 def test_record_observation_failure_then_success_clears_failed_technique():
     state = AttackState(attack_classes=["shell_injection"], budget=10)
-    fail = Observation(
-        iteration=0, payload_id="p1", attack_class="shell_injection", success=False
-    )
+    fail = Observation(iteration=0, payload_id="p1", attack_class="shell_injection", success=False)
     state.record_observation(fail)
     assert state.failed_techniques == ["shell_injection"]
 
@@ -138,11 +157,17 @@ def test_record_observation_failure_then_success_clears_failed_technique():
 
 def test_consecutive_failures_resets_across_class_switch():
     state = AttackState(attack_classes=["a", "b"], budget=10)
-    state.record_observation(Observation(iteration=0, payload_id="p1", attack_class="a", success=False))
-    state.record_observation(Observation(iteration=1, payload_id="p2", attack_class="a", success=False))
+    state.record_observation(
+        Observation(iteration=0, payload_id="p1", attack_class="a", success=False)
+    )
+    state.record_observation(
+        Observation(iteration=1, payload_id="p2", attack_class="a", success=False)
+    )
     assert state.consecutive_failures("a") == 2
 
-    state.record_observation(Observation(iteration=2, payload_id="p3", attack_class="b", success=False))
+    state.record_observation(
+        Observation(iteration=2, payload_id="p3", attack_class="b", success=False)
+    )
     assert state.consecutive_failures("a") == 0
     assert state.consecutive_failures("b") == 1
 
@@ -166,7 +191,9 @@ def test_first_decision_is_explore():
     assert decision.attack_class == "indirect_injection"
 
 
-def _satisfy_floor_for_other_classes(nexus: Nexus, other_classes: list[str], tool_name: str) -> None:
+def _satisfy_floor_for_other_classes(
+    nexus: Nexus, other_classes: list[str], tool_name: str
+) -> None:
     """Test helper: give every class in ``other_classes`` one (failing)
     attempt so the joint coverage floor no longer has anything to say about
     them, letting a test isolate reactive behavior for the one class it
@@ -267,7 +294,11 @@ def test_chain_depth_limit_stops_pivoting_but_not_the_whole_scan():
 
     # Simulate 3 successful FOLLOW_PATH-driven pivots across 3 classes, each
     # with its 2-tool surface fully harvested (both tools tried).
-    for cls, pid in [("indirect_injection", "p1"), ("tool_poisoning", "p2"), ("prompt_exfiltration", "p3")]:
+    for cls, pid in [
+        ("indirect_injection", "p1"),
+        ("tool_poisoning", "p2"),
+        ("prompt_exfiltration", "p3"),
+    ]:
         for tool_name, is_pivot in [("read_file", True), ("send_email", False)]:
             rec = _record(cls, tool_name, payload_id=f"{pid}-{tool_name}")
             v = _verdict(success=True, confidence="high", attack_class=cls)
@@ -402,7 +433,9 @@ def test_observe_extracts_tools_called_and_new_capability():
 
 def test_deterministic_reasoner_prefers_already_successful_class():
     state = AttackState(attack_classes=["a", "b"], budget=10)
-    state.record_observation(Observation(iteration=0, payload_id="p1", attack_class="a", success=True, confidence="high"))
+    state.record_observation(
+        Observation(iteration=0, payload_id="p1", attack_class="a", success=True, confidence="high")
+    )
 
     candidates = [
         NexusDecision(action=NexusAction.EXPLORE, attack_class="b", rationale="unexplored"),
@@ -452,23 +485,38 @@ def _two_hop_record(source_tool: str, target_tool: str, attack_class: str) -> Ru
     descendant of source_tool's own result — real causality, not a guess."""
     root = TraceEvent(run_id="r1", node_type=NodeType.USER_INPUT, name="user", content="hi")
     call_a = TraceEvent(
-        run_id="r1", node_type=NodeType.TOOL_CALL, name=source_tool, content="x",
+        run_id="r1",
+        node_type=NodeType.TOOL_CALL,
+        name=source_tool,
+        content="x",
         parent_event_id=root.event_id,
     )
     result_a = TraceEvent(
-        run_id="r1", node_type=NodeType.TOOL_RESULT, name=source_tool, content="poisoned",
+        run_id="r1",
+        node_type=NodeType.TOOL_RESULT,
+        name=source_tool,
+        content="poisoned",
         parent_event_id=call_a.event_id,
     )
     call_b = TraceEvent(
-        run_id="r1", node_type=NodeType.TOOL_CALL, name=target_tool, content="y",
+        run_id="r1",
+        node_type=NodeType.TOOL_CALL,
+        name=target_tool,
+        content="y",
         parent_event_id=result_a.event_id,
     )
     events = [root, call_a, result_a, call_b]
     payload = Payload(
-        payload_id="p1", attack_class=AttackClass(attack_class), delivery_input="d",
-        injection_text="i", canary="PWN-DEADBEEF", target_tool=source_tool,
+        payload_id="p1",
+        attack_class=AttackClass(attack_class),
+        delivery_input="d",
+        injection_text="i",
+        canary="PWN-DEADBEEF",
+        target_tool=source_tool,
     )
-    return RunRecord.from_events(events, adversarial=True, attack_class=attack_class, payload=payload)
+    return RunRecord.from_events(
+        events, adversarial=True, attack_class=attack_class, payload=payload
+    )
 
 
 def test_observe_confirms_relationship_from_real_trace_causality():

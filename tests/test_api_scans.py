@@ -349,9 +349,9 @@ def test_export_poc_zip_404s_with_no_findings():
 def test_triage_update_sets_status_and_note():
     backend = FakeGraphBackend()
     _persist_demo_report(backend)
-    finding_id = _client(backend).get("/api/scans/scan-1/report").json()["findings"][0][
-        "finding_id"
-    ]
+    finding_id = (
+        _client(backend).get("/api/scans/scan-1/report").json()["findings"][0]["finding_id"]
+    )
 
     resp = _client(backend).post(
         f"/api/scans/scan-1/findings/{finding_id}/triage",
@@ -372,9 +372,9 @@ def test_triage_update_sets_status_and_note():
 def test_triage_update_rejects_unknown_status():
     backend = FakeGraphBackend()
     _persist_demo_report(backend)
-    finding_id = _client(backend).get("/api/scans/scan-1/report").json()["findings"][0][
-        "finding_id"
-    ]
+    finding_id = (
+        _client(backend).get("/api/scans/scan-1/report").json()["findings"][0]["finding_id"]
+    )
     resp = _client(backend).post(
         f"/api/scans/scan-1/findings/{finding_id}/triage", json={"status": "not-a-real-status"}
     )
@@ -443,15 +443,13 @@ def test_finding_chain_returns_the_node_ids_behind_it():
     _persist_demo_report(backend)  # payload_id="p1" on its one finding
     _add_trace_node(backend, "u1", node_type="user_input")
     _add_trace_node(backend, "t1", node_type="tool_call")
-    backend.add_node(
-        "sink::t1", scan_id="scan-1", node_type="dangerous", payload_id="p1"
-    )
+    backend.add_node("sink::t1", scan_id="scan-1", node_type="dangerous", payload_id="p1")
     backend.add_edge("u1", "t1")
     backend.add_edge("t1", "sink::t1")
 
-    finding_id = _client(backend).get("/api/scans/scan-1/report").json()["findings"][0][
-        "finding_id"
-    ]
+    finding_id = (
+        _client(backend).get("/api/scans/scan-1/report").json()["findings"][0]["finding_id"]
+    )
     resp = _client(backend).get(f"/api/scans/scan-1/findings/{finding_id}/chain")
     assert resp.status_code == 200
     assert set(resp.json()["nodes"]) == {"u1", "t1", "sink::t1"}
@@ -469,9 +467,9 @@ def test_finding_chain_404s_when_no_matching_sink_exists():
     with its payload_id survives in the graph — a clean 404, not a crash."""
     backend = FakeGraphBackend()
     _persist_demo_report(backend)
-    finding_id = _client(backend).get("/api/scans/scan-1/report").json()["findings"][0][
-        "finding_id"
-    ]
+    finding_id = (
+        _client(backend).get("/api/scans/scan-1/report").json()["findings"][0]["finding_id"]
+    )
     resp = _client(backend).get(f"/api/scans/scan-1/findings/{finding_id}/chain")
     assert resp.status_code == 404
 
@@ -491,12 +489,25 @@ def test_compare_scans_404s_when_either_report_missing():
 def test_get_logs_groups_events_into_runs():
     backend = FakeGraphBackend()
     _add_trace_node(
-        backend, "u1", node_type="user_input", content="hi", run_id="run-a",
-        is_adversarial=True, payload_id="p1", attack_class="indirect_injection", timestamp=0.0,
+        backend,
+        "u1",
+        node_type="user_input",
+        content="hi",
+        run_id="run-a",
+        is_adversarial=True,
+        payload_id="p1",
+        attack_class="indirect_injection",
+        timestamp=0.0,
     )
     _add_trace_node(
-        backend, "c1", node_type="tool_call", content="args", run_id="run-a",
-        is_adversarial=True, payload_id="p1", timestamp=1.0,
+        backend,
+        "c1",
+        node_type="tool_call",
+        content="args",
+        run_id="run-a",
+        is_adversarial=True,
+        payload_id="p1",
+        timestamp=1.0,
     )
 
     resp = _client(backend).get("/api/scans/scan-1/logs")
@@ -542,7 +553,9 @@ def test_get_nexus_state_returns_persisted_data():
     assert body["scan_id"] == "scan-1"
     assert body["iteration"] == 1
     assert len(body["observations"]) == 1
-    assert body["observations"][0]["rationale"] == "first probe — starting with 'indirect_injection'"
+    assert (
+        body["observations"][0]["rationale"] == "first probe — starting with 'indirect_injection'"
+    )
 
 
 def test_get_nexus_state_404s_for_a_static_mode_scan():

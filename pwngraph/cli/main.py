@@ -1252,9 +1252,11 @@ def init_cmd(path: Path, out: Path, target: Path | None) -> None:
         console.print()
         console.print(
             "[dim]Verify _ENTRY_FUNCTION and _TOOL_DESCRIPTIONS at the top of the "
-            f"file match your agent, then:[/dim]"
+            "file match your agent, then:[/dim]"
         )
-        console.print(f"  [bold cyan]pwngraph scan --target {out}:build_agent --dry-run[/bold cyan]")
+        console.print(
+            f"  [bold cyan]pwngraph scan --target {out}:build_agent --dry-run[/bold cyan]"
+        )
         console.print(
             f"  [bold cyan]pwngraph scan --target {out}:build_agent --attacks all "
             f"--budget {budget} --authorized --out ./out[/bold cyan]"
@@ -1412,9 +1414,7 @@ def _print_recon(target_profile: Any) -> None:
     table.add_column("Target tool")
     table.add_column("Rationale")
     for item in target_profile.attack_plan[:3]:
-        table.add_row(
-            str(item.rank), item.attack_class, item.target_tool or "—", item.rationale
-        )
+        table.add_row(str(item.rank), item.attack_class, item.target_tool or "—", item.rationale)
     console.print(table)
 
 
@@ -1719,8 +1719,16 @@ OUTPUT FORMAT — raw Python only:
 
 
 _AGENT_FILE_SKIP_DIRS = {
-    "venv", ".venv", "__pycache__", ".git", "node_modules", "dist", "build",
-    ".tox", ".pytest_cache", "site-packages",
+    "venv",
+    ".venv",
+    "__pycache__",
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    ".tox",
+    ".pytest_cache",
+    "site-packages",
 }
 _AGENT_FILE_SKIP_PREFIXES = ("test_", "conftest", "setup", "adapter", "_")
 
@@ -1729,18 +1737,34 @@ _AGENT_FILE_SKIP_PREFIXES = ("test_", "conftest", "setup", "adapter", "_")
 # of truth: any file it misses still gets a real chance via the structural
 # fallback below, which reads actual code shape instead of matching strings.
 _AGENT_KEYWORD_SIGNALS = [
-    "@tool", "build_agent", "create_react_agent", "AgentExecutor",
-    "ChatOpenAI", "ChatGoogleGenerativeAI", "ChatGroq", "ChatAnthropic",
-    "langgraph", "langchain", "tool_calling_agent",
-    "chat.completions.create", "client.chat.completions",
-    "openai.OpenAI", "anthropic.Anthropic", "tool_calls", "function_call",
-    "TOOL_SCHEMAS", "SYSTEM_PROMPT", '"role": "system"', "'role': 'system'",
+    "@tool",
+    "build_agent",
+    "create_react_agent",
+    "AgentExecutor",
+    "ChatOpenAI",
+    "ChatGoogleGenerativeAI",
+    "ChatGroq",
+    "ChatAnthropic",
+    "langgraph",
+    "langchain",
+    "tool_calling_agent",
+    "chat.completions.create",
+    "client.chat.completions",
+    "openai.OpenAI",
+    "anthropic.Anthropic",
+    "tool_calls",
+    "function_call",
+    "TOOL_SCHEMAS",
+    "SYSTEM_PROMPT",
+    '"role": "system"',
+    "'role': 'system'",
 ]
 
 
 def _candidate_py_files(scan_dir: Path) -> list[Path]:
     return [
-        f for f in sorted(scan_dir.rglob("*.py"))
+        f
+        for f in sorted(scan_dir.rglob("*.py"))
         if not any(part in _AGENT_FILE_SKIP_DIRS for part in f.parts)
         and not f.name.startswith(_AGENT_FILE_SKIP_PREFIXES)
     ]
@@ -1826,6 +1850,7 @@ def _validate_adapter_runs(out: Path) -> str | None:
     This genuinely runs the target agent file's top-level code, same as a
     real scan moments later would — no new trust boundary crossed.
     """
+    import contextlib
     import importlib.util
     import sys
     import traceback as _tb
@@ -1857,10 +1882,8 @@ def _validate_adapter_runs(out: Path) -> str | None:
     finally:
         sys.modules.pop(mod_name, None)
         if path_added:
-            try:
+            with contextlib.suppress(ValueError):
                 sys.path.remove(parent)
-            except ValueError:
-                pass
 
 
 def _llm_generate_adapter(source_path: Path, out: Path, analysis: Any = None) -> bool:
@@ -1914,8 +1937,7 @@ def _llm_generate_adapter(source_path: Path, out: Path, analysis: Any = None) ->
             hints.append(f"Dispatch dict: {analysis.tools_dict_name}")
     hints.append("Treat these as ground truth unless the source clearly contradicts them.")
     user_content = (
-        f"Generate adapter.py for this agent:\n\n```python\n{source}\n```\n\n"
-        + "\n".join(hints)
+        f"Generate adapter.py for this agent:\n\n```python\n{source}\n```\n\n" + "\n".join(hints)
     )
 
     messages: list[dict[str, str]] = [
@@ -1924,7 +1946,11 @@ def _llm_generate_adapter(source_path: Path, out: Path, analysis: Any = None) ->
     ]
 
     for attempt in range(2):
-        status = "Asking GPT-4o-mini to analyse" if attempt == 0 else "Asking GPT-4o-mini to fix its own output for"
+        status = (
+            "Asking GPT-4o-mini to analyse"
+            if attempt == 0
+            else "Asking GPT-4o-mini to fix its own output for"
+        )
         with console.status(f"[dim]{status} {source_path.name}…[/dim]"):
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -1959,14 +1985,16 @@ def _llm_generate_adapter(source_path: Path, out: Path, analysis: Any = None) ->
 
         if attempt == 0:
             messages.append({"role": "assistant", "content": code})
-            messages.append({
-                "role": "user",
-                "content": (
-                    "That code failed when actually run. Fix it and output the "
-                    "complete corrected adapter.py (raw Python only, same rules as "
-                    f"before). The error was:\n\n{error_for_retry}"
-                ),
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "That code failed when actually run. Fix it and output the "
+                        "complete corrected adapter.py (raw Python only, same rules as "
+                        f"before). The error was:\n\n{error_for_retry}"
+                    ),
+                }
+            )
 
     return False
 

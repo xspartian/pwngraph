@@ -51,7 +51,7 @@ class Fuzzer:
         attack_class: str,
         tools: list[ToolSpec],
         context: dict | None = None,
-        target_profile: "TargetProfile | None" = None,
+        target_profile: TargetProfile | None = None,
     ) -> Payload:
         """Generate a single adversarial payload for the named class.
 

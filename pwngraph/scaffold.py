@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -153,8 +154,8 @@ class PlainAgentAnalysis:
 
     module_name: str = ""
     entry_function: str | None = None
-    entry_confidence: str = "none"          # "high" | "medium" | "none"
-    tools: list[tuple[str, str]] = field(default_factory=list)   # (name, description)
+    entry_confidence: str = "none"  # "high" | "medium" | "none"
+    tools: list[tuple[str, str]] = field(default_factory=list)  # (name, description)
     all_functions: list[str] = field(default_factory=list)
     tools_dict_name: str | None = None
 
@@ -179,7 +180,7 @@ def analyze_plain_agent(path: Path) -> PlainAgentAnalysis:
 
     functions: dict[str, ast.AST] = {}
     docstrings: dict[str, str] = {}
-    tools_dict: dict[str, str] = {}          # tool name -> function name
+    tools_dict: dict[str, str] = {}  # tool name -> function name
     tools_dict_var: str | None = None
     schema_descriptions: dict[str, str] = {}
 
@@ -193,7 +194,8 @@ def analyze_plain_agent(path: Path) -> PlainAgentAnalysis:
             mapping: dict[str, str] = {}
             for k, v in zip(node.value.keys, node.value.values, strict=False):
                 if (
-                    isinstance(k, ast.Constant) and isinstance(k.value, str)
+                    isinstance(k, ast.Constant)
+                    and isinstance(k.value, str)
                     and isinstance(v, ast.Name)
                 ):
                     mapping[k.value] = v.id
@@ -252,14 +254,14 @@ def analyze_plain_agent(path: Path) -> PlainAgentAnalysis:
 
         score = 0
         if dispatch_fn == name:
-            score += 6                                          # *is* the dispatcher
+            score += 6  # *is* the dispatcher
         if tools_dict_var and tools_dict_var in _referenced_names(node):
-            score += 6                                          # references the dispatch dict
+            score += 6  # references the dispatch dict
         score += min(len(call_graph.get(name, set()) & tool_fn_names), 4)  # fan-out to tools
         if _called_from_main(tree, name):
-            score += 4                                          # invoked from main()/__main__
+            score += 4  # invoked from main()/__main__
         if required == 1:
-            score += 1                                          # takes one turn of input
+            score += 1  # takes one turn of input
         if score > 0:
             candidates.append((score, name))
 
@@ -306,12 +308,14 @@ def _find_dispatch_ladder(functions: dict[str, ast.AST]) -> tuple[dict[str, str]
             test = sub.test
             if not (
                 isinstance(test, ast.Compare)
-                and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
             ):
                 continue
             literal = next(
                 (
-                    side.value for side in (test.left, *test.comparators)
+                    side.value
+                    for side in (test.left, *test.comparators)
                     if isinstance(side, ast.Constant) and isinstance(side.value, str)
                 ),
                 None,
@@ -328,7 +332,7 @@ def _find_dispatch_ladder(functions: dict[str, ast.AST]) -> tuple[dict[str, str]
     return (best[1], best[2]) if best else ({}, None)
 
 
-def _direct_calls(node: ast.AST, known_names: "Iterable[str]") -> set[str]:
+def _direct_calls(node: ast.AST, known_names: Iterable[str]) -> set[str]:
     """Top-level function names directly called anywhere inside *node*."""
     names = set(known_names)
     return {
@@ -356,7 +360,11 @@ def _called_from_main(tree: ast.Module, func_name: str) -> bool:
             targets.append(node)
     for t in targets:
         for sub in ast.walk(t):
-            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id == func_name:
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id == func_name
+            ):
                 return True
     return False
 
@@ -646,8 +654,7 @@ def generate_plain_adapter(
 ) -> None:
     """Write a working adapter.py for a framework-less (plain Python) agent."""
     content = (
-        _TEMPLATE_PLAIN_PYTHON
-        .replace("__MODULE__", module)
+        _TEMPLATE_PLAIN_PYTHON.replace("__MODULE__", module)
         .replace("__ENTRY_FUNCTION__", entry_function)
         .replace("__TOOLS_DICT_NAME__", repr(tools_dict_name))
         .replace("__TOOL_DESCRIPTIONS__", repr(tools))

@@ -450,9 +450,9 @@ class Nexus:
         # live options once there's something to broaden into — offered as
         # real alternatives rather than the first one always winning.
         candidates = []
-        if self.cfg.validate_before_escalate and len(self.state.tail_observations(last.attack_class)) < (
-            self.cfg.max_consecutive_failures_before_switch
-        ):
+        if self.cfg.validate_before_escalate and len(
+            self.state.tail_observations(last.attack_class)
+        ) < (self.cfg.max_consecutive_failures_before_switch):
             candidates.append(
                 NexusDecision(
                     action=NexusAction.VALIDATE,
@@ -486,7 +486,11 @@ class Nexus:
                 tools_hint=[untried[0]] if untried else tools_hint,
                 rationale=(
                     f"'{last.attack_class}' validated and no other class in scope — "
-                    + (f"trying untried tool '{untried[0]}'" if untried else "continuing to probe it")
+                    + (
+                        f"trying untried tool '{untried[0]}'"
+                        if untried
+                        else "continuing to probe it"
+                    )
                 ),
             )
         ]
@@ -503,7 +507,10 @@ class Nexus:
             last.attack_class, [t.name for t in self.tools]
         )
         alternative_class = self._next_unexplored_class(exclude=last.attack_class)
-        if fails_in_row >= self.cfg.max_consecutive_failures_before_switch and alternative_class is not None:
+        if (
+            fails_in_row >= self.cfg.max_consecutive_failures_before_switch
+            and alternative_class is not None
+        ):
             return [
                 NexusDecision(
                     action=NexusAction.TRY_ALTERNATIVE,
@@ -571,7 +578,9 @@ class Nexus:
         else:
             attack_class = never_touched_classes[0]
             action_sinks = [t.name for t in self.tools if t.is_action_sink]
-            tool_name = action_sinks[0] if action_sinks else (self.tools[0].name if self.tools else None)
+            tool_name = (
+                action_sinks[0] if action_sinks else (self.tools[0].name if self.tools else None)
+            )
             reason = f"every tool has an attempt — '{attack_class}' is still untried, aiming at '{tool_name}'"
 
         self.plan.append(
@@ -602,7 +611,9 @@ class Nexus:
         knowable part, extended live for the part that isn't.
         """
         classes = self.state.attack_classes
-        tool_names = [t.name for t in sorted(self.tools, key=lambda t: 0 if t.is_action_sink else 1)]
+        tool_names = [
+            t.name for t in sorted(self.tools, key=lambda t: 0 if t.is_action_sink else 1)
+        ]
         if not classes or not tool_names:
             return []
         n = min(len(classes), len(tool_names))

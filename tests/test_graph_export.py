@@ -312,9 +312,7 @@ def test_findings_fallback_keeps_distinct_chain_shapes_separate():
     backend = FakeGraphBackend()
     _add_trace_node(backend, "u1", node_type="user_input", name="user")
     _add_trace_node(backend, "t1", node_type="tool_call", name="read_file")
-    backend.add_node(
-        "sink::t1", scan_id="scan-1", node_type="dangerous", outcome_severity="high"
-    )
+    backend.add_node("sink::t1", scan_id="scan-1", node_type="dangerous", outcome_severity="high")
     backend.add_edge("u1", "t1")
     backend.add_edge("t1", "sink::t1")
 
@@ -330,8 +328,16 @@ def test_findings_fallback_keeps_distinct_chain_shapes_separate():
     assert len(view["findings"]) == 2
 
 
-def _chain(backend, *, user="u1", tool_node="t1", tool_name="read_file", payload_id="p1",
-           severity="critical", scan_id="scan-1"):
+def _chain(
+    backend,
+    *,
+    user="u1",
+    tool_node="t1",
+    tool_name="read_file",
+    payload_id="p1",
+    severity="critical",
+    scan_id="scan-1",
+):
     _add_trace_node(backend, user, scan_id=scan_id, node_type="user_input")
     _add_trace_node(backend, tool_node, scan_id=scan_id, node_type="tool_call", name=tool_name)
     backend.add_node(
@@ -380,9 +386,7 @@ def test_findings_from_report_skips_findings_with_no_matching_sink():
     view = build_graph_view(
         backend,
         "scan-1",
-        report_findings=[
-            {"finding_id": "f1", "payload_id": "does-not-exist", "severity": "high"}
-        ],
+        report_findings=[{"finding_id": "f1", "payload_id": "does-not-exist", "severity": "high"}],
     )
     assert view["findings"] == []
 
@@ -400,8 +404,17 @@ def test_findings_from_report_ignored_when_empty_report_has_zero_findings():
 
 def test_findings_from_report_ranked_by_severity():
     backend = FakeGraphBackend()
-    _chain(backend, user="u1", tool_node="t1", tool_name="read_file", payload_id="p1", severity="low")
-    _chain(backend, user="u2", tool_node="t2", tool_name="send_email", payload_id="p2", severity="critical")
+    _chain(
+        backend, user="u1", tool_node="t1", tool_name="read_file", payload_id="p1", severity="low"
+    )
+    _chain(
+        backend,
+        user="u2",
+        tool_node="t2",
+        tool_name="send_email",
+        payload_id="p2",
+        severity="critical",
+    )
 
     view = build_graph_view(
         backend,

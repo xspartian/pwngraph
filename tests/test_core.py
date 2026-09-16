@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 from _fake_backend import FakeGraphBackend
-
 from _fake_llm_client import FakeLLMClient
 
 from pwngraph.core import PwnGraph
@@ -54,7 +53,9 @@ def test_run_static_analysis_against_real_lab_agent_after_a_real_scan():
         import agent as lab_agent
 
         built = lab_agent.build_agent(use_real_llm=False)
-        pg = PwnGraph(agent=built, seed=3, graph_backend=FakeGraphBackend(), llm_client=FakeLLMClient())
+        pg = PwnGraph(
+            agent=built, seed=3, graph_backend=FakeGraphBackend(), llm_client=FakeLLMClient()
+        )
         pg.scan(
             attacks=["prompt_exfiltration"],
             budget=2,
@@ -92,7 +93,9 @@ def test_report_writes_evidence_ladder_json_when_static_analysis_ran(tmp_path):
         import agent as lab_agent
 
         built = lab_agent.build_agent(use_real_llm=False)
-        pg = PwnGraph(agent=built, seed=3, graph_backend=FakeGraphBackend(), llm_client=FakeLLMClient())
+        pg = PwnGraph(
+            agent=built, seed=3, graph_backend=FakeGraphBackend(), llm_client=FakeLLMClient()
+        )
         pg.scan(
             attacks=["prompt_exfiltration"],
             budget=2,
@@ -125,7 +128,9 @@ def test_report_omits_evidence_ladder_json_when_static_analysis_never_ran(tmp_pa
         import agent as lab_agent
 
         built = lab_agent.build_agent(use_real_llm=False)
-        pg = PwnGraph(agent=built, seed=3, graph_backend=FakeGraphBackend(), llm_client=FakeLLMClient())
+        pg = PwnGraph(
+            agent=built, seed=3, graph_backend=FakeGraphBackend(), llm_client=FakeLLMClient()
+        )
         pg.scan(
             attacks=["prompt_exfiltration"],
             budget=1,

@@ -477,7 +477,14 @@ def test_scan_log_orders_runs_by_when_they_actually_happened_not_run_id_string()
     backend = FakeGraphBackend()
     # 'zzzz' would sort after 'aaaa' alphabetically, but it happened first.
     _seed_run(backend, "scan-1", "zzzz", is_adversarial=False, start_ts=0.0)
-    _seed_run(backend, "scan-1", "aaaa", is_adversarial=True, attack_class="indirect_injection", start_ts=50.0)
+    _seed_run(
+        backend,
+        "scan-1",
+        "aaaa",
+        is_adversarial=True,
+        attack_class="indirect_injection",
+        start_ts=50.0,
+    )
 
     rows = scan_log(backend, "scan-1")
     run_order = list(dict.fromkeys(r["run_id"] for r in rows))
@@ -487,8 +494,13 @@ def test_scan_log_orders_runs_by_when_they_actually_happened_not_run_id_string()
 def test_scan_log_carries_adversarial_and_attack_class_metadata():
     backend = FakeGraphBackend()
     _seed_run(
-        backend, "scan-1", "run-a", is_adversarial=True,
-        attack_class="tool_poisoning", payload_id="p1", start_ts=0.0,
+        backend,
+        "scan-1",
+        "run-a",
+        is_adversarial=True,
+        attack_class="tool_poisoning",
+        payload_id="p1",
+        start_ts=0.0,
     )
 
     rows = scan_log(backend, "scan-1")

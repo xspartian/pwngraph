@@ -116,7 +116,9 @@ class LLMReasoner(NexusReasoner):
         try:
             order = self._ask_for_order(state, candidates)
         except Exception:  # noqa: BLE001 — a flaky/misconfigured LLM must not stall NEXUS
-            log.warning("LLMReasoner.rank failed; falling back to deterministic ranking", exc_info=True)
+            log.warning(
+                "LLMReasoner.rank failed; falling back to deterministic ranking", exc_info=True
+            )
             return self._fallback.rank(state, candidates)
         if order is None:
             return self._fallback.rank(state, candidates)

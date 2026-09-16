@@ -88,7 +88,9 @@ class PwnGraph:
         self.agent = agent
         self.connector: Connector = connector or make_connector(agent, input_key=input_key)
         self.tracer = Tracer()
-        self.fuzzer = Fuzzer(seed=seed, llm_client=llm_client, payload_cache_path=payload_cache_path)
+        self.fuzzer = Fuzzer(
+            seed=seed, llm_client=llm_client, payload_cache_path=payload_cache_path
+        )
         self.graph_builder = GraphBuilder(backend=graph_backend)
         self.reporter = Reporter()
 
@@ -1028,9 +1030,14 @@ class PwnGraph:
                 context["recent_signals"] = recent
             try:
                 payload = self.fuzzer.next_payload(
-                    decision.attack_class, tools=tools, context=context or None, target_profile=self.target_profile
+                    decision.attack_class,
+                    tools=tools,
+                    context=context or None,
+                    target_profile=self.target_profile,
                 )
-            except Exception as exc:  # noqa: BLE001 — a flaky generation call shouldn't kill the run
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 — a flaky generation call shouldn't kill the run
                 log.warning("Payload generation failed (class=%s): %s", decision.attack_class, exc)
                 continue
 
@@ -1064,7 +1071,9 @@ class PwnGraph:
             calls_made += 1
             record = self._run_records[-1]
             verdict = oracle.evaluate_run(record)
-            obs = nexus.observe(record, verdict, action=decision.action, rationale=decision.rationale)
+            obs = nexus.observe(
+                record, verdict, action=decision.action, rationale=decision.rationale
+            )
 
             # Carrier-delivery feedback: a payload that wrote content to a
             # carrier location and named a target tool only actually
@@ -1076,7 +1085,8 @@ class PwnGraph:
             # re-rolling that tool for the rest of this scan's budget.
             if payload.metadata.get("carrier_location") and payload.target_tool:
                 carrier_results = [
-                    e for e in record.events
+                    e
+                    for e in record.events
                     if e.node_type is NodeType.TOOL_RESULT and e.name == payload.target_tool
                 ]
                 if carrier_results:

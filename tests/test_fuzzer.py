@@ -62,8 +62,12 @@ def test_benign_query_no_tools_falls_back():
 
 
 def test_benign_query_deterministic_with_seed(tools):
-    seq1 = [Fuzzer(seed=5, llm_client=FakeLLMClient()).benign_query(i, tools=tools) for i in range(5)]
-    seq2 = [Fuzzer(seed=5, llm_client=FakeLLMClient()).benign_query(i, tools=tools) for i in range(5)]
+    seq1 = [
+        Fuzzer(seed=5, llm_client=FakeLLMClient()).benign_query(i, tools=tools) for i in range(5)
+    ]
+    seq2 = [
+        Fuzzer(seed=5, llm_client=FakeLLMClient()).benign_query(i, tools=tools) for i in range(5)
+    ]
     assert seq1 == seq2
 
 

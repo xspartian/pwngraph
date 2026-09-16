@@ -41,7 +41,9 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         supplied = _extract_token(request)
         if supplied is None or not hmac.compare_digest(supplied, self._token):
-            return JSONResponse(status_code=401, content={"detail": "Missing or invalid API token."})
+            return JSONResponse(
+                status_code=401, content={"detail": "Missing or invalid API token."}
+            )
         return await call_next(request)
 
 

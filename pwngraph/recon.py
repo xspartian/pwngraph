@@ -281,9 +281,7 @@ def _rank_candidate_pairs(
     cheap, dependency-free relatedness signal — shared non-trivial words
     between their descriptions — so the capped chain-probe budget goes to the
     pairs most likely to actually be related, not a random guess."""
-    words = {
-        t.name: set(re.findall(r"[a-z]{4,}", (t.description or "").lower())) for t in tools
-    }
+    words = {t.name: set(re.findall(r"[a-z]{4,}", (t.description or "").lower())) for t in tools}
 
     def overlap(pair: tuple[str, str]) -> int:
         return len(words.get(pair[0], set()) & words.get(pair[1], set()))
@@ -334,7 +332,9 @@ def _build_attack_plan(
     for attack_class in attack_classes:
         affinity_tags = _CLASS_TAG_AFFINITY.get(attack_class, [])
         candidates = [
-            t for t in tool_profiles if not affinity_tags or any(tag in t.tags for tag in affinity_tags)
+            t
+            for t in tool_profiles
+            if not affinity_tags or any(tag in t.tags for tag in affinity_tags)
         ] or tool_profiles
         best = max(candidates, key=tool_score, default=None)
         priority = tool_score(best) if best else 0.0
@@ -376,7 +376,9 @@ def _objective_sentence(attack_plan: list[AttackPlanItem], chains: list[ChainHyp
     if attack_plan and attack_plan[0].target_tool:
         top = attack_plan[0]
         return f"No confirmed chain observed; prioritizing '{top.attack_class}' against '{top.target_tool}'."
-    return "No tool surface discovered; running standard breadth coverage across all attack classes."
+    return (
+        "No tool surface discovered; running standard breadth coverage across all attack classes."
+    )
 
 
 __all__ = [

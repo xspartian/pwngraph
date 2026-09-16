@@ -43,7 +43,9 @@ def test_record_confirmed_relationship_promotes_existing_hypothesis():
     cap_map.record_confirmed_relationship("read_file", "send_email", evidence="observed")
 
     matches = [
-        r for r in cap_map.relationships if r.source_tool == "read_file" and r.target_tool == "send_email"
+        r
+        for r in cap_map.relationships
+        if r.source_tool == "read_file" and r.target_tool == "send_email"
     ]
     assert len(matches) == 1
     assert matches[0].kind == "confirmed_chain"
@@ -56,7 +58,9 @@ def test_record_confirmed_relationship_adds_new_when_not_hypothesized():
     cap_map.record_confirmed_relationship("web_search", "read_file", evidence="observed anyway")
 
     matches = [
-        r for r in cap_map.relationships if r.source_tool == "web_search" and r.target_tool == "read_file"
+        r
+        for r in cap_map.relationships
+        if r.source_tool == "web_search" and r.target_tool == "read_file"
     ]
     assert len(matches) == 1
     assert matches[0].kind == "confirmed_chain"
@@ -67,16 +71,25 @@ def test_record_confirmed_relationships_from_events_detects_real_causality():
 
     root = TraceEvent(run_id="r1", node_type=NodeType.USER_INPUT, name="user", content="hi")
     call_a = TraceEvent(
-        run_id="r1", node_type=NodeType.TOOL_CALL, name="read_file", content="x",
+        run_id="r1",
+        node_type=NodeType.TOOL_CALL,
+        name="read_file",
+        content="x",
         parent_event_id=root.event_id,
     )
     result_a = TraceEvent(
-        run_id="r1", node_type=NodeType.TOOL_RESULT, name="read_file", content="poisoned",
+        run_id="r1",
+        node_type=NodeType.TOOL_RESULT,
+        name="read_file",
+        content="poisoned",
         parent_event_id=call_a.event_id,
     )
     # send_email called as a descendant of read_file's result — real 2-hop causality.
     call_b = TraceEvent(
-        run_id="r1", node_type=NodeType.TOOL_CALL, name="send_email", content="y",
+        run_id="r1",
+        node_type=NodeType.TOOL_CALL,
+        name="send_email",
+        content="y",
         parent_event_id=result_a.event_id,
     )
     events = [root, call_a, result_a, call_b]
@@ -94,11 +107,17 @@ def test_record_confirmed_relationships_ignores_same_tool_self_calls():
     cap_map = AgentCapabilityMap.build("test-agent", _tools())
     root = TraceEvent(run_id="r1", node_type=NodeType.USER_INPUT, name="user", content="hi")
     call_a = TraceEvent(
-        run_id="r1", node_type=NodeType.TOOL_CALL, name="read_file", content="x",
+        run_id="r1",
+        node_type=NodeType.TOOL_CALL,
+        name="read_file",
+        content="x",
         parent_event_id=root.event_id,
     )
     result_a = TraceEvent(
-        run_id="r1", node_type=NodeType.TOOL_RESULT, name="read_file", content="y",
+        run_id="r1",
+        node_type=NodeType.TOOL_RESULT,
+        name="read_file",
+        content="y",
         parent_event_id=call_a.event_id,
     )
     events = [root, call_a, result_a]

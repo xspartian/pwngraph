@@ -142,7 +142,9 @@ class AttackState(BaseModel):
                 self.successful_techniques.append(obs.attack_class)
             if obs.attack_class in self.failed_techniques:
                 self.failed_techniques.remove(obs.attack_class)
-            self.confidence = min(1.0, self.confidence + _CONFIDENCE_DELTA.get(obs.confidence, 0.05))
+            self.confidence = min(
+                1.0, self.confidence + _CONFIDENCE_DELTA.get(obs.confidence, 0.05)
+            )
             # current_path is the discovered *chain* — it only grows on a
             # deliberate chain pivot (NexusAction.FOLLOW_PATH), never on
             # ordinary breadth exploration that happens to land on a
@@ -206,7 +208,11 @@ class AttackState(BaseModel):
         preserved from ``tool_names`` so callers can pass a priority order
         (e.g. action sinks first) and get it back.
         """
-        tried = {sig.split(":", 1)[1] for sig in self.tried_signatures if sig.startswith(f"{attack_class}:")}
+        tried = {
+            sig.split(":", 1)[1]
+            for sig in self.tried_signatures
+            if sig.startswith(f"{attack_class}:")
+        }
         return [name for name in tool_names if name not in tried]
 
     def breadth_complete(self) -> bool:

@@ -139,7 +139,9 @@ class AgentCapabilityMap(BaseModel):
             )
         )
 
-    def record_confirmed_relationships_from_events(self, events: list[Any]) -> list[tuple[str, str]]:
+    def record_confirmed_relationships_from_events(
+        self, events: list[Any]
+    ) -> list[tuple[str, str]]:
         """Walk one probe's TraceEvents for genuine tool-A-caused-tool-B
         causality and record every link found. Returns the (source, target)
         pairs newly confirmed this call, for logging/observation purposes.
