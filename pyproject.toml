@@ -1,0 +1,143 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pwngraph"
+version = "1.0.0"
+description = "The Runtime Attack Graph Engine for AI Agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Suyog", email = "suyog.cybersec@gmail.com" },
+]
+keywords = [
+    "ai-security",
+    "agent-security",
+    "langchain",
+    "prompt-injection",
+    "attack-graph",
+    "fuzzing",
+    "red-team",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    # Neo4j is the graph store — see pwngraph/backend/. There is no
+    # in-process fallback; every scan needs a reachable server (see
+    # docker-compose.yml). Storage and analysis (diff, blast-radius, the
+    # query library) are Neo4j-only, with no NetworkX involved.
+    "neo4j>=5.0",
+    "pydantic>=2.0",
+    "click>=8.1",
+    "rich>=13.0",
+    "pyyaml>=6.0",
+    # The fuzzer's payload content is LLM-generated at scan time (see
+    # pwngraph/fuzzer/llm_generator.py) — there is no static-template
+    # fallback, so this is core, not an extra. Uses OPENAI_API_KEY.
+    "openai>=1.0.0",
+]
+
+[project.optional-dependencies]
+# The core engine (Connector/Fuzzer/Tracer/Oracle/GraphBuilder/Reporter) only
+# consumes TraceEvent streams and duck-typed agent objects — it never imports
+# langchain/langgraph at module scope. `pip install pwngraph` alone (plus a
+# reachable Neo4j) is enough to scan any agent through a custom Connector.
+# These two extras pull in only what's needed for the matching *built-in*
+# connector, so e.g. a LangGraph-only user isn't forced to install
+# langchain-openai/langchain-community too. A framework-less plain-Python
+# agent needs neither — `pwngraph init` generates a shim for it.
+langchain = [
+    "langchain>=0.1.0",
+    "langchain-core>=0.1.0",
+    "langchain-openai>=0.0.5",
+    "langchain-community>=0.0.10",
+]
+langgraph = [
+    "langgraph>=0.1.0",
+    "langchain-core>=0.1.0",
+]
+# `pwngraph serve` — the live FastAPI + React/Sigma.js/Graphology graph
+# viewer (pwngraph/api/). Reads Neo4j directly; not needed to run a scan.
+serve = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pytest-asyncio>=0.21",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5",
+    "build>=1.0",
+    "twine>=5.0",
+]
+# Everything needed to run the full test suite and lint/typecheck.
+all = [
+    "pwngraph[langchain,langgraph,serve,dev]",
+]
+
+[project.scripts]
+pwngraph = "pwngraph.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/xspartian/pwngraph"
+Documentation = "https://github.com/xspartian/pwngraph/blob/main/docs/"
+Repository = "https://github.com/xspartian/pwngraph"
+Issues = "https://github.com/xspartian/pwngraph/issues"
+
+[tool.setuptools.packages.find]
+include = ["pwngraph*"]
+exclude = ["tests*", "examples*"]
+
+[tool.setuptools.package-data]
+pwngraph = [
+    "profiles/*.yaml",
+    "resources/*.yml",
+    "py.typed",
+    "api/static/**",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests as integration (deselect with '-m \"not integration\"')",
+    "slow: marks tests as slow",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's own documented pattern (`backend: GraphBackend = Depends(get_backend)`)
+# looks like B008's "don't call functions in defaults" footgun but isn't one —
+# FastAPI evaluates Depends(...) per-request, not once at import time.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.params.Depends"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true

@@ -1,0 +1,8 @@
+name: "Quick scan"
+description: >
+  Fast smoke test — prompt exfiltration only, small budget.
+  Use to verify connectivity and get a first signal in under a minute.
+attacks: prompt_exfiltration
+budget: 10
+baseline_runs: 2
+nexus_level: 1

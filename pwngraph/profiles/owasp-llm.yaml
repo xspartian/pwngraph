@@ -1,0 +1,10 @@
+name: "OWASP LLM Top 10"
+description: >
+  Coverage-oriented run mapped to the OWASP LLM Top 10 (2025). Runs every
+  attack class with --exhaustive so every category gets a real, multi-attempt
+  shot instead of stopping early on the first confident class.
+attacks: all
+budget: 45
+baseline_runs: 3
+nexus_level: 2
+exhaustive: true

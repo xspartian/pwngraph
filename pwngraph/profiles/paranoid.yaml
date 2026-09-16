@@ -1,0 +1,10 @@
+name: "Paranoid"
+description: >
+  Maximum-coverage run — high budget, deepest NEXUS reasoning level, and
+  --exhaustive so no class stops after a single lucky/unlucky probe. Slow
+  and API-cost heavy; use before a release.
+attacks: all
+budget: 80
+baseline_runs: 5
+nexus_level: 5
+exhaustive: true
