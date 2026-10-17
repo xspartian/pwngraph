@@ -26,18 +26,20 @@ from pydantic import BaseModel, Field
 # Node / edge taxonomy
 # ---------------------------------------------------------------------------
 
+
 class NodeType(str, Enum):
     """Node types in the attack graph.
 
-    Colors are the v1 palette used by the pyvis renderer.
+    Colors are the v1 palette, stored as a node property in Neo4j for
+    whatever renders the graph — no renderer consumes them directly today.
     """
 
-    USER_INPUT = "user_input"           # red    — entry point
-    TOOL_CALL = "tool_call"             # blue   — agent invoked a tool
-    TOOL_RESULT = "tool_result"         # yellow — tool returned data
-    AGENT_THOUGHT = "agent_thought"     # gray   — internal reasoning step
-    FINAL_ANSWER = "final_answer"       # green  — agent's final response
-    DANGEROUS_OUTCOME = "dangerous"     # black  — sink node, attack succeeded
+    USER_INPUT = "user_input"  # red    — entry point
+    TOOL_CALL = "tool_call"  # blue   — agent invoked a tool
+    TOOL_RESULT = "tool_result"  # yellow — tool returned data
+    AGENT_THOUGHT = "agent_thought"  # gray   — internal reasoning step
+    FINAL_ANSWER = "final_answer"  # green  — agent's final response
+    DANGEROUS_OUTCOME = "dangerous"  # black  — sink node, attack succeeded
 
     @property
     def color(self) -> str:
@@ -48,33 +50,58 @@ class NodeType(str, Enum):
         return _NODE_SHAPES[self]
 
 
+# Palette rationale — this is a *validated* set, not a taste call.
+#
+# An attack graph is an all-pairs form: any two nodes can end up side by side,
+# so every pair has to stay distinguishable, including under colour-vision
+# deficiency. Measured against the dark canvas (#0D1117) these three chromatic
+# identity hues plus the reserved critical red clear the lightness band, the
+# chroma floor, the normal-vision separation floor, and 3:1 contrast; the worst
+# CVD pair sits at ΔE 7.2, inside the band that is permitted only alongside
+# secondary encoding — which the renderer always provides (a direct label on
+# every node and an always-visible legend).
+#
+# Two deliberate consequences:
+#   * **Red is reserved for danger.** USER_INPUT used to be red too, which in a
+#     security tool put "where the attacker came in" and "what the attacker
+#     achieved" in the same colour family. Only DANGEROUS_OUTCOME is red now.
+#   * **AGENT_THOUGHT and FINAL_ANSWER are neutrals, not identity hues.** Only
+#     three chromatic slots survive an all-pairs check beside a reserved red, so
+#     the three that carry security signal keep colour (entry point, the agent
+#     acting, the data coming back) and the two scaffolding types step back.
+#     Shape and label still distinguish them.
 _NODE_COLORS = {
-    NodeType.USER_INPUT: "#E74C3C",
-    NodeType.TOOL_CALL: "#3498DB",
-    NodeType.TOOL_RESULT: "#F1C40F",
-    NodeType.AGENT_THOUGHT: "#95A5A6",
-    NodeType.FINAL_ANSWER: "#2ECC71",
-    NodeType.DANGEROUS_OUTCOME: "#1B1B1B",
+    NodeType.USER_INPUT: "#199e70",  # aqua — attacker-controlled entry point
+    NodeType.TOOL_CALL: "#3987e5",  # blue — the agent invoking a tool
+    NodeType.TOOL_RESULT: "#c98500",  # yellow — data returning into context
+    NodeType.AGENT_THOUGHT: "#6b7785",  # neutral, recessive — reasoning scaffolding
+    NodeType.FINAL_ANSWER: "#aab4c0",  # neutral, light — terminal output
+    NodeType.DANGEROUS_OUTCOME: "#d03b3b",  # reserved status:critical
 }
 
+# Renderer-agnostic shape names. Every node draws as a circle: mixing shapes
+# made the graph busier without helping, and colour plus the always-present
+# node label already separate the types. Size is the one exception — the
+# dangerous-outcome sink is drawn larger so the payoff of a chain is the first
+# thing the eye lands on.
 _NODE_SHAPES = {
     NodeType.USER_INPUT: "dot",
-    NodeType.TOOL_CALL: "box",
-    NodeType.TOOL_RESULT: "ellipse",
-    NodeType.AGENT_THOUGHT: "diamond",
+    NodeType.TOOL_CALL: "dot",
+    NodeType.TOOL_RESULT: "dot",
+    NodeType.AGENT_THOUGHT: "dot",
     NodeType.FINAL_ANSWER: "dot",
-    NodeType.DANGEROUS_OUTCOME: "star",
+    NodeType.DANGEROUS_OUTCOME: "dot",
 }
 
 
 class EdgeType(str, Enum):
     """How information / influence flowed between two nodes."""
 
-    NORMAL_FLOW = "normal_flow"             # ordinary, non-adversarial transition
-    DIRECT_INJECTION = "direct_injection"   # attacker text in the user message
-    CONTEXT_POISONING = "context_poisoning" # poisoned doc/tool result steered behavior
-    TOOL_MANIPULATION = "tool_manipulation" # agent invoked tool with attacker-chosen args
-    DATA_EXFIL = "data_exfil"               # sensitive data left the trust boundary
+    NORMAL_FLOW = "normal_flow"  # ordinary, non-adversarial transition
+    DIRECT_INJECTION = "direct_injection"  # attacker text in the user message
+    CONTEXT_POISONING = "context_poisoning"  # poisoned doc/tool result steered behavior
+    TOOL_MANIPULATION = "tool_manipulation"  # agent invoked tool with attacker-chosen args
+    DATA_EXFIL = "data_exfil"  # sensitive data left the trust boundary
 
     @property
     def color(self) -> str:
@@ -97,6 +124,7 @@ _EDGE_COLORS = {
 # ---------------------------------------------------------------------------
 # Severity
 # ---------------------------------------------------------------------------
+
 
 class Severity(str, Enum):
     """CVSS-aligned severity bucket. Numeric mapping at .score."""
@@ -134,6 +162,7 @@ class Severity(str, Enum):
 # Trace event — what the Tracer emits
 # ---------------------------------------------------------------------------
 
+
 class TraceEvent(BaseModel):
     """A single observed step inside the agent's execution.
 
@@ -147,8 +176,8 @@ class TraceEvent(BaseModel):
     timestamp: float = Field(default_factory=time.time)
 
     node_type: NodeType
-    name: str                           # tool name, "user", "llm", etc.
-    content: str                        # input/output/text payload
+    name: str  # tool name, "user", "llm", etc.
+    content: str  # input/output/text payload
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     # Causality — which earlier event this event was caused by.
@@ -168,6 +197,7 @@ class TraceEvent(BaseModel):
 # ---------------------------------------------------------------------------
 # Attack path — what the GraphBuilder discovers
 # ---------------------------------------------------------------------------
+
 
 class AttackPath(BaseModel):
     """An ordered chain of trace events from an entry point to a sink.
@@ -210,6 +240,7 @@ class AttackPath(BaseModel):
 # Finding — what the Reporter writes up
 # ---------------------------------------------------------------------------
 
+
 class Finding(BaseModel):
     """A confirmed exploitable attack chain, ready for a bug bounty writeup."""
 
@@ -219,8 +250,8 @@ class Finding(BaseModel):
     cvss_vector: str | None = None
     cvss_score: float | None = None
 
-    target_system: str                  # e.g. "ChatGPT plugins", "Gemini Ext"
-    attack_class: str                   # e.g. "indirect_injection"
+    target_system: str  # e.g. "ChatGPT plugins", "Gemini Ext"
+    attack_class: str  # e.g. "indirect_injection"
     owasp: list[str] = Field(default_factory=list)  # e.g. ["LLM01", "LLM06"]
     payload_id: str
 
@@ -241,7 +272,9 @@ class Finding(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _short_id() -> str:
     """8-char random id. Not cryptographic — used for log/UI keys only."""
     import secrets
+
     return secrets.token_hex(4)

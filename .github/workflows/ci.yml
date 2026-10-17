@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  lint:
+    name: ruff + black
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: ruff check pwngraph tests
+      - run: black --check pwngraph tests
+
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    # Every scan requires Neo4j now (NetworkX/pyvis were removed) — this
+    # service container is what lets the neo4j leg of the backend contract
+    # suite (tests/test_backend_contract.py) actually run in CI instead of
+    # skipping. This exact config has not been run here; verify it goes green
+    # on the first real PR.
+    services:
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/pwngraph-dev
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "wget -qO- http://localhost:7474 || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[all]"
+      - run: pytest --cov=pwngraph --cov-report=term-missing
+        env:
+          PWNGRAPH_NEO4J_URI: bolt://localhost:7687
+          PWNGRAPH_NEO4J_PASSWORD: pwngraph-dev
+          NEO4J_TEST_URI: bolt://localhost:7687
+          NEO4J_TEST_PASSWORD: pwngraph-dev
+
+  typecheck:
+    name: mypy
+    runs-on: ubuntu-latest
+    # pre-existing debt across the codebase; wired in so it's visible on every
+    # PR without blocking merges until it's clean.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: mypy pwngraph
+
+  frontend:
+    name: frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # build:pwngraph runs `tsc -b && vite build` and then copies dist/ into
+      # pwngraph/api/static/ — the exact pipeline a maintainer has to run by
+      # hand before `pwngraph serve` reflects a frontend change. Nothing
+      # before this job ever ran that pipeline in CI, which is how a stale
+      # pwngraph/api/static/ (built from older source) went unnoticed
+      # locally; this doesn't catch that specific case — the directory is
+      # gitignored, not committed, so there's nothing to diff against — but
+      # it does mean a frontend change that breaks the build or the copy
+      # script fails a PR instead of only being discovered by hand later.
+      - run: npm run build:pwngraph
+
+  package:
+    name: build + install sanity check
+    runs-on: ubuntu-latest
+    # Runs `python -m build` for real and installs the resulting wheel into a
+    # throwaway venv, then exercises the actual `pwngraph` console script —
+    # catches a packaging regression (missing package-data, a broken
+    # [project.scripts] entry point, an empty/near-empty wheel) that
+    # `pip install -e .` in the other jobs can never see, since an editable
+    # install never goes through sdist/wheel building at all. This is the
+    # gap that let a ~1.4KB placeholder wheel with no real code and no
+    # console script reach PyPI unnoticed — this job exists so that can't
+    # happen silently again.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - name: Reject a suspiciously small wheel
+        run: |
+          wheel=$(ls dist/*.whl)
+          size=$(stat -c%s "$wheel")
+          echo "Wheel: $wheel ($size bytes)"
+          if [ "$size" -lt 20000 ]; then
+            echo "::error::Wheel is only $size bytes — looks like a hollow stub, not the real package."
+            exit 1
+          fi
+      - name: Install the built wheel into a clean venv and smoke-test it
+        run: |
+          python -m venv /tmp/pkgcheck
+          /tmp/pkgcheck/bin/pip install dist/*.whl
+          /tmp/pkgcheck/bin/pwngraph version
+          /tmp/pkgcheck/bin/pwngraph list-attacks
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

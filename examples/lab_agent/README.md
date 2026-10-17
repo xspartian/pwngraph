@@ -32,11 +32,11 @@ webhook exfil, code execution).
 ```bash
 # Full scan, all 6 attack classes:
 pwngraph scan --target examples/lab_agent/agent.py:build_agent \
-              --attacks all --iterations 30 --out ./results
+              --attacks all --budget 30 --authorized --out ./results
 
 # Single attack class:
 pwngraph scan --target examples/lab_agent/agent.py:build_agent \
-              --attacks tool_poisoning --iterations 30 --out ./results
+              --attacks tool_poisoning --budget 30 --authorized --out ./results
 ```
 
 ## Run it standalone

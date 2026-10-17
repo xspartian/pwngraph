@@ -13,12 +13,12 @@ from pwngraph.types import _short_id
 class AttackClass(str, Enum):
     """Supported attack classes."""
 
-    INDIRECT_INJECTION   = "indirect_injection"
-    TOOL_POISONING       = "tool_poisoning"
-    PROMPT_EXFILTRATION  = "prompt_exfiltration"
-    SHELL_INJECTION      = "shell_injection"
-    FILE_READ_INJECTION  = "file_read_injection"
-    MEMORY_POISONING     = "memory_poisoning"
+    INDIRECT_INJECTION = "indirect_injection"
+    TOOL_POISONING = "tool_poisoning"
+    PROMPT_EXFILTRATION = "prompt_exfiltration"
+    SHELL_INJECTION = "shell_injection"
+    FILE_READ_INJECTION = "file_read_injection"
+    MEMORY_POISONING = "memory_poisoning"
 
 
 class Payload(BaseModel):

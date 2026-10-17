@@ -1,4 +1,10 @@
-"""GraphBuilder — convert TraceEvents into a NetworkX attack graph.
+"""GraphBuilder — convert TraceEvents into an attack graph.
+
+Storage is delegated to a :class:`~pwngraph.backend.GraphBackend`, so this
+module holds only the *semantics* of the graph — what becomes a node, how an
+edge is classified, when a dangerous outcome is attached — and none of the
+storage mechanics. Swapping the backend changes where the graph lives without
+touching any of the logic below.
 
 Construction algorithm
 ----------------------
@@ -34,6 +40,19 @@ Deduplication
 Many fuzz iterations produce *structurally* identical paths. We dedup by
 ``AttackPath.signature()`` (a hash over the (NodeType, name) sequence), keeping
 the highest-severity instance.
+
+Scan scoping
+------------
+The backend is Neo4j — a persistent, shared database, not a fresh in-process
+graph per run. Every node this builder writes carries a ``scan_id`` (a fresh
+one per ``GraphBuilder()`` unless passed explicitly), and every path query
+filters sources/sinks by it. Without that, ``find_dangerous_paths`` would pick
+up source/sink candidates left behind by unrelated earlier scans of other
+targets on the same server: no bogus *paths* would result (nothing connects
+one scan's event ids to another's), but the search would slow down without
+bound as history accumulates, checking ``has_path`` against ever more
+irrelevant pairs. Scoping keeps each scan's own query cheap regardless of how
+much history the database is holding for investigation elsewhere.
 """
 
 from __future__ import annotations
@@ -41,15 +60,18 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
+from datetime import datetime, timezone
+from typing import Any
 
-import networkx as nx
-
+from pwngraph.backend import GraphBackend, make_backend
+from pwngraph.redact import redact_secrets
 from pwngraph.types import (
     AttackPath,
     EdgeType,
     NodeType,
     Severity,
     TraceEvent,
+    _short_id,
 )
 
 log = logging.getLogger(__name__)
@@ -57,8 +79,8 @@ log = logging.getLogger(__name__)
 # Patterns for exfil-shaped sinks in final outputs or tool arguments.
 _EXFIL_PATTERNS = [
     re.compile(r"https?://[^\s]+"),
-    re.compile(r"\b[\w\.+-]+@[\w-]+\.[\w.-]+\b"),    # email
-    re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),            # api-key-like
+    re.compile(r"\b[\w\.+-]+@[\w-]+\.[\w.-]+\b"),  # email
+    re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),  # api-key-like
 ]
 
 # Generic canary shape (matches Payload.make_canary output).
@@ -68,8 +90,22 @@ _CANARY_RE = re.compile(r"\bPWN-[A-F0-9]{8}\b")
 class GraphBuilder:
     """Builds and queries the attack graph."""
 
-    def __init__(self, action_sinks: set[str] | None = None) -> None:
-        self.graph: nx.MultiDiGraph = nx.MultiDiGraph()
+    def __init__(
+        self,
+        action_sinks: set[str] | None = None,
+        backend: GraphBackend | None = None,
+        scan_id: str | None = None,
+    ) -> None:
+        # Defaults to Neo4j via PWNGRAPH_NEO4J_* env vars (see pwngraph.backend);
+        # pass an explicit backend to point at a different instance or database.
+        self.graph: GraphBackend = backend or make_backend()
+        # Scopes this builder's nodes and path queries within the shared,
+        # persistent database — see "Scan scoping" above.
+        self.scan_id: str = scan_id or _short_id()
+        # Stamped on every node this builder writes, purely so a later "list
+        # every scan in this database" query (pwngraph.queries.list_scans)
+        # has something to sort/browse by — nothing here reads it back.
+        self.scanned_at: str = datetime.now(timezone.utc).isoformat()
         self._events_by_id: dict[str, TraceEvent] = {}
         # canary token → event_id that planted it (the adversarial source)
         self._canary_origin: dict[str, str] = {}
@@ -125,23 +161,23 @@ class GraphBuilder:
     # ------------------------------------------------------------------
 
     def find_dangerous_paths(self) -> list[AttackPath]:
-        """All adversarial paths from a UserInput to a DangerousOutcome."""
-        sources = [
-            n for n, d in self.graph.nodes(data=True)
-            if d.get("node_type") == NodeType.USER_INPUT.value and d.get("is_adversarial")
-        ]
-        sinks = [
-            n for n, d in self.graph.nodes(data=True)
-            if d.get("node_type") == NodeType.DANGEROUS_OUTCOME.value
-        ]
+        """All adversarial paths from a UserInput to a DangerousOutcome, scoped
+        to this builder's scan_id."""
+        sources = self.graph.find_nodes(
+            node_type=NodeType.USER_INPUT.value, is_adversarial=True, scan_id=self.scan_id
+        )
+        sinks = self.graph.find_nodes(
+            node_type=NodeType.DANGEROUS_OUTCOME.value, scan_id=self.scan_id
+        )
 
         seen: dict[str, AttackPath] = {}
         for src in sources:
             for sink in sinks:
-                if not nx.has_path(self.graph, src, sink):
+                if not self.graph.has_path(src, sink):
                     continue
-                # cutoff prevents pathological blow-up on dense graphs
-                for raw in nx.all_simple_paths(self.graph, src, sink, cutoff=12):
+                # The backend applies a hop cutoff; without one, simple-path
+                # enumeration blows up combinatorially on dense graphs.
+                for raw in self.graph.simple_paths(src, sink):
                     path = self._materialize_path(raw)
                     if path is None:
                         continue
@@ -154,23 +190,17 @@ class GraphBuilder:
         return paths
 
     def all_paths(self) -> list[list[str]]:
-        """Diagnostic: every UserInput→FinalAnswer path, adversarial or not."""
-        sources = [
-            n for n, d in self.graph.nodes(data=True)
-            if d.get("node_type") == NodeType.USER_INPUT.value
-        ]
-        finals = [
-            n for n, d in self.graph.nodes(data=True)
-            if d.get("node_type") in (
-                NodeType.FINAL_ANSWER.value,
-                NodeType.DANGEROUS_OUTCOME.value,
-            )
-        ]
+        """Diagnostic: every UserInput→FinalAnswer path in this scan, adversarial or not."""
+        sources = self.graph.find_nodes(node_type=NodeType.USER_INPUT.value, scan_id=self.scan_id)
+        finals = self.graph.find_nodes(
+            node_type=NodeType.FINAL_ANSWER.value, scan_id=self.scan_id
+        ) + self.graph.find_nodes(node_type=NodeType.DANGEROUS_OUTCOME.value, scan_id=self.scan_id)
+
         out: list[list[str]] = []
         for s in sources:
             for f in finals:
-                if nx.has_path(self.graph, s, f):
-                    out.extend(nx.all_simple_paths(self.graph, s, f, cutoff=12))
+                if self.graph.has_path(s, f):
+                    out.extend(self.graph.simple_paths(s, f))
         return out
 
     # ------------------------------------------------------------------
@@ -178,19 +208,44 @@ class GraphBuilder:
     # ------------------------------------------------------------------
 
     def _add_node(self, ev: TraceEvent) -> None:
-        snippet = ev.content[:120].replace("\n", " ")
+        # 120 chars used to cap this — enough for a label tooltip, not enough
+        # to actually read the payload/response a click-through node inspector
+        # opens on. 4000 keeps a single Neo4j property bounded (some tool
+        # outputs are pathologically large) while covering the overwhelming
+        # majority of real payloads and responses in full.
+        snippet = ev.content[:4000]
+        # Graph nodes are written to Neo4j as each run is ingested, before the
+        # scan-end redaction pass in core.py, so redact tool output / final
+        # answers here too. Payload and tool-call text stay intact (canary
+        # tracking needs it).
+        if ev.node_type in (NodeType.TOOL_RESULT, NodeType.FINAL_ANSWER):
+            snippet = redact_secrets(snippet)
         self.graph.add_node(
             ev.event_id,
+            scan_id=self.scan_id,
+            scanned_at=self.scanned_at,
             node_type=ev.node_type.value,
             name=ev.name,
             label=self._label_for(ev),
-            title=self._title_for(ev),
             color=ev.node_type.color,
             shape=ev.node_type.shape,
             is_adversarial=ev.is_adversarial,
             payload_id=ev.payload_id,
             content=snippet,
             run_id=ev.run_id,
+            # Per-event wall-clock time — TraceEvent already carries this
+            # (time.time() at emission), just never persisted before. Lets a
+            # chronological view (e.g. pwngraph serve's Logs tab) order
+            # events honestly instead of relying on a backend's incidental
+            # write/return order.
+            timestamp=ev.timestamp,
+            # Only ever set on a run's root (USER_INPUT) event by
+            # Tracer.start_run, but persisting it unconditionally is
+            # harmless (None/False on every other event) and means a
+            # per-run summary can be read straight off that one node
+            # without threading extra state through ingest().
+            attack_class=ev.metadata.get("attack_class"),
+            is_root=bool(ev.metadata.get("is_root")),
         )
 
     @staticmethod
@@ -209,18 +264,6 @@ class GraphBuilder:
             return "DANGER"
         return ev.name
 
-    @staticmethod
-    def _title_for(ev: TraceEvent) -> str:
-        """The tooltip rendered by pyvis on hover."""
-        snippet = ev.content[:400].replace("\n", "<br/>")
-        adv = " (ADV)" if ev.is_adversarial else ""
-        return (
-            f"<b>{ev.node_type.value}{adv}</b><br/>"
-            f"<i>{ev.name}</i><br/>"
-            f"run={ev.run_id} ev={ev.event_id}<br/>"
-            f"<pre>{snippet}</pre>"
-        )
-
     # ------------------------------------------------------------------
     # Internals — edges
     # ------------------------------------------------------------------
@@ -232,7 +275,6 @@ class GraphBuilder:
             child.event_id,
             edge_type=et.value,
             color=et.color,
-            title=et.value.replace("_", " "),
             label="" if et is EdgeType.NORMAL_FLOW else et.value,
             is_adversarial=et.is_adversarial,
             dashes=et is EdgeType.DATA_EXFIL,
@@ -253,10 +295,7 @@ class GraphBuilder:
             return EdgeType.TOOL_MANIPULATION
 
         # Adversarial tool result → next step → context poisoning
-        if (
-            parent.is_adversarial
-            and parent.node_type is NodeType.TOOL_RESULT
-        ):
+        if parent.is_adversarial and parent.node_type is NodeType.TOOL_RESULT:
             return EdgeType.CONTEXT_POISONING
 
         # Adversarial user input → tool call → direct injection
@@ -339,10 +378,11 @@ class GraphBuilder:
         sink_id = f"sink::{ev.event_id}"
         self.graph.add_node(
             sink_id,
+            scan_id=self.scan_id,
+            scanned_at=self.scanned_at,
             node_type=NodeType.DANGEROUS_OUTCOME.value,
             name="DangerousOutcome",
             label="DANGER",
-            title=description,
             color=NodeType.DANGEROUS_OUTCOME.color,
             shape=NodeType.DANGEROUS_OUTCOME.shape,
             is_adversarial=True,
@@ -352,13 +392,19 @@ class GraphBuilder:
             description=description,
             outcome_severity=severity.value,
             confidence=confidence,
+            # A hair after the triggering event, not the same instant — this
+            # sink is a synthetic conclusion GraphBuilder attaches, not a
+            # TraceEvent the Tracer emitted, so it has no timestamp of its
+            # own; ordering it right after what caused it keeps chronological
+            # views (e.g. pwngraph serve's Logs tab) from showing a run's
+            # "DANGER" outcome before the input that triggered it.
+            timestamp=ev.timestamp + 1e-6,
         )
         self.graph.add_edge(
             ev.event_id,
             sink_id,
             edge_type=edge_type.value,
             color=edge_type.color,
-            title=edge_type.value.replace("_", " "),
             label=edge_type.value,
             is_adversarial=True,
             dashes=edge_type is EdgeType.DATA_EXFIL,
@@ -385,22 +431,26 @@ class GraphBuilder:
             if not getattr(v, "success", False):
                 continue
             ev_id = getattr(v, "sink_event_id", None)
-            if not ev_id or ev_id not in self.graph:
+            if not ev_id or not self.graph.has_node(ev_id):
                 continue
             sink_id = f"sink::{ev_id}"
-            if sink_id in self.graph:
+            if self.graph.has_node(sink_id):
                 continue  # canary pass already flagged this event
 
             severity = v.severity
             edge_type = v.edge_type or EdgeType.TOOL_MANIPULATION
             description = "; ".join(v.signals) or "behavioral divergence from baseline"
+            # See _maybe_attach_sink's identical note: order this synthetic
+            # sink right after the real event that evidenced it.
+            trigger_timestamp = self.graph.node_attrs(ev_id).get("timestamp", 0.0) or 0.0
 
             self.graph.add_node(
                 sink_id,
+                scan_id=self.scan_id,
+                scanned_at=self.scanned_at,
                 node_type=NodeType.DANGEROUS_OUTCOME.value,
                 name="DangerousOutcome",
                 label="DANGER",
-                title=description,
                 color=NodeType.DANGEROUS_OUTCOME.color,
                 shape=NodeType.DANGEROUS_OUTCOME.shape,
                 is_adversarial=True,
@@ -410,13 +460,13 @@ class GraphBuilder:
                 description=description,
                 outcome_severity=severity.value,
                 confidence=v.confidence,
+                timestamp=trigger_timestamp + 1e-6,
             )
             self.graph.add_edge(
                 ev_id,
                 sink_id,
                 edge_type=edge_type.value,
                 color=edge_type.color,
-                title=edge_type.value.replace("_", " "),
                 label=edge_type.value,
                 is_adversarial=True,
                 dashes=edge_type is EdgeType.DATA_EXFIL,
@@ -436,7 +486,7 @@ class GraphBuilder:
             if ev is None:
                 # Synthetic sink — fabricate a TraceEvent stand-in so the
                 # path is self-describing.
-                attrs = self.graph.nodes[n]
+                attrs = self.graph.node_attrs(n)
                 events.append(
                     TraceEvent(
                         event_id=n,
@@ -453,12 +503,13 @@ class GraphBuilder:
         # Read each edge's classified type out of the graph
         edge_types: list[EdgeType] = []
         for u, v in zip(raw, raw[1:], strict=False):
-            data = self.graph.get_edge_data(u, v)
-            if not data:
+            parallel = self.graph.edges_between(u, v)
+            if not parallel:
                 continue
-            # MultiDiGraph: pick the most adversarial edge between these two
+            # Several edges can join the same pair; the adversarial one carries
+            # the story, so it wins over a plain normal_flow.
             chosen = max(
-                data.values(),
+                parallel,
                 key=lambda d: 0 if d.get("edge_type") == EdgeType.NORMAL_FLOW.value else 1,
             )
             edge_types.append(EdgeType(chosen["edge_type"]))
@@ -468,7 +519,7 @@ class GraphBuilder:
 
         # Prefer the sink's own assessment (it saw exactly where the canary
         # landed); fall back to the edge-mix heuristic for legacy sinks.
-        sink_attrs = self.graph.nodes.get(raw[-1], {})
+        sink_attrs = self.graph.node_attrs(raw[-1])
         confidence = sink_attrs.get("confidence", "high")
         if sink_attrs.get("outcome_severity"):
             severity = Severity(sink_attrs["outcome_severity"])
@@ -498,10 +549,6 @@ class GraphBuilder:
 
     @staticmethod
     def _describe(events: list[TraceEvent], edges: list[EdgeType]) -> str:
-        steps = " → ".join(
-            f"{e.node_type.value}({e.name})" for e in events
-        )
-        adv_edges = ", ".join(
-            sorted({e.value for e in edges if e.is_adversarial})
-        )
+        steps = " → ".join(f"{e.node_type.value}({e.name})" for e in events)
+        adv_edges = ", ".join(sorted({e.value for e in edges if e.is_adversarial}))
         return f"{steps}  |  via: {adv_edges or 'normal'}"

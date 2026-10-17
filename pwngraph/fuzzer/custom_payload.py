@@ -98,23 +98,23 @@ def load_payload(path: Path) -> Payload:
         template_vars[str(k)] = str(v)
 
     # ---- Core fields -------------------------------------------------------
-    attack_class   = AttackClass(raw["attack_class"])
+    attack_class = AttackClass(raw["attack_class"])
     delivery_input = _sub(str(raw["delivery_input"]), template_vars)
     injection_text = _sub(str(raw["injection_text"]), template_vars)
-    target_tool    = raw.get("target_tool") or None
-    poisoned_raw   = raw.get("poisoned_output", raw["injection_text"])
+    target_tool = raw.get("target_tool") or None
+    poisoned_raw = raw.get("poisoned_output", raw["injection_text"])
     poisoned_output = _sub(str(poisoned_raw), template_vars)
 
     # ---- Template info block -----------------------------------------------
     info_block: dict[str, Any] = raw.get("info") or {}
     template_info: dict[str, Any] = {
-        "severity":    info_block.get("severity"),
+        "severity": info_block.get("severity"),
         "cvss_metrics": info_block.get("cvss-metrics"),
-        "cvss_score":  info_block.get("cvss-score"),
-        "owasp_llm":   info_block.get("owasp-llm"),
-        "cwe":         info_block.get("cwe"),
+        "cvss_score": info_block.get("cvss-score"),
+        "owasp_llm": info_block.get("owasp-llm"),
+        "cwe": info_block.get("cwe"),
         "remediation": info_block.get("remediation"),
-        "reference":   info_block.get("reference") or [],
+        "reference": info_block.get("reference") or [],
     }
 
     # ---- Metadata (backwards-compat + new fields in one dict) --------------
@@ -175,8 +175,7 @@ def load_payloads(path: Path, agent_tools: set[str] | None = None) -> list[Paylo
     payloads: list[Payload] = []
     for f in files:
         p = load_payload(f)
-        if agent_tools is not None and p.requires_tool:
-            if p.requires_tool not in agent_tools:
-                continue  # agent doesn't have the required tool — skip
+        if agent_tools is not None and p.requires_tool and p.requires_tool not in agent_tools:
+            continue  # agent doesn't have the required tool — skip
         payloads.append(p)
     return payloads

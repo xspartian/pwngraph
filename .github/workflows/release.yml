@@ -1,0 +1,99 @@
+name: Release
+
+# Two triggers:
+#   - a published GitHub Release (the real publish path — tag must be v<version>,
+#     e.g. v1.0.0, matching pyproject.toml's [project].version exactly)
+#   - manual dispatch, defaulted to TestPyPI, for rehearsing the pipeline
+#     without touching the real PyPI project.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+jobs:
+  build:
+    name: Build + verify distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+
+      - run: python -m build
+
+      - name: Release tag must match pyproject.toml's version
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg_version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$tag  pyproject.toml=$pkg_version"
+          if [ "$tag" != "$pkg_version" ]; then
+            echo "::error::Release tag 'v$tag' does not match pyproject.toml version '$pkg_version'. Bump the version and re-tag before publishing."
+            exit 1
+          fi
+
+      - run: twine check dist/*
+
+      # Same guard as ci.yml's package job — a hollow/near-empty wheel must
+      # never reach PyPI. Duplicated deliberately: this workflow has to stay
+      # correct even if ci.yml's build job is ever skipped or disabled.
+      - name: Reject a suspiciously small wheel
+        run: |
+          wheel=$(ls dist/*.whl)
+          size=$(stat -c%s "$wheel")
+          echo "Wheel: $wheel ($size bytes)"
+          if [ "$size" -lt 20000 ]; then
+            echo "::error::Wheel is only $size bytes — refusing to publish a hollow stub."
+            exit 1
+          fi
+
+      - name: Install the built wheel into a clean venv and smoke-test it
+        run: |
+          python -m venv /tmp/pkgcheck
+          /tmp/pkgcheck/bin/pip install dist/*.whl
+          /tmp/pkgcheck/bin/pwngraph version
+          /tmp/pkgcheck/bin/pwngraph list-attacks
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to ${{ (github.event_name == 'release' || inputs.target == 'pypi') && 'PyPI' || 'TestPyPI' }}
+    needs: build
+    runs-on: ubuntu-latest
+    # A GitHub Environment gates this job behind manual approval if you add
+    # required reviewers to it in repo Settings → Environments — recommended
+    # for the real "pypi" environment so a publish is never fully automatic.
+    environment:
+      name: ${{ (github.event_name == 'release' || inputs.target == 'pypi') && 'pypi' || 'testpypi' }}
+    permissions:
+      # Trusted publishing (OIDC) — no PyPI API token stored as a secret.
+      # One-time setup required on pypi.org: project → Publishing → add a
+      # trusted publisher for this repo/workflow. See
+      # https://docs.pypi.org/trusted-publishers/
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,7 +1,9 @@
 """Abstract Connector interface.
 
 A Connector is the adapter between PwnGraph and a target agent framework.
-v1 ships only LangChainConnector. CrewAI and AutoGen connectors are v2.
+v1 ships LangChainConnector and LangGraphConnector (which also covers the
+shim ``pwngraph init`` generates for a framework-less plain-Python agent).
+AutoGen and other framework connectors are v2.
 """
 
 from __future__ import annotations
@@ -30,19 +32,43 @@ class ToolSpec(BaseModel):
     def is_data_sink(self) -> bool:
         """Heuristic: does this tool *consume* untrusted external data?"""
         text = f"{self.name} {self.description}".lower()
-        return any(t in text for t in (
-            "search", "read", "fetch", "load", "get", "retriev",
-            "browse", "scrape", "http", "open", "download",
-        ))
+        return any(
+            t in text
+            for t in (
+                "search",
+                "read",
+                "fetch",
+                "load",
+                "get",
+                "retriev",
+                "browse",
+                "scrape",
+                "http",
+                "open",
+                "download",
+            )
+        )
 
     @property
     def is_action_sink(self) -> bool:
         """Heuristic: does this tool *take action* in the world?"""
         text = f"{self.name} {self.description}".lower()
-        return any(t in text for t in (
-            "send", "post", "write", "delete", "execute", "run",
-            "create", "update", "purchase", "transfer", "publish",
-        ))
+        return any(
+            t in text
+            for t in (
+                "send",
+                "post",
+                "write",
+                "delete",
+                "execute",
+                "run",
+                "create",
+                "update",
+                "purchase",
+                "transfer",
+                "publish",
+            )
+        )
 
 
 class Connector(ABC):

@@ -1,0 +1,33 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+pwngraph_out/
+my_scan_results/
+out/
+out*/
+
+# a separate git clone of pwngraph-labs (demo/reference targets used for
+# manual real-API testing) — not part of this package, never committed here.
+pwngraph-labs/
+
+# frontend/ (React + Sigma.js/Graphology viewer) — dist/ above already
+# covers frontend/dist/; node_modules and the built-frontend copy that
+# `npm run build:pwngraph` drops into the Python package are build output.
+frontend/node_modules/
+pwngraph/api/static/

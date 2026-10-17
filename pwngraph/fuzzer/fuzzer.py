@@ -1,21 +1,22 @@
-"""Fuzzer — picks an attack class, asks a generator for a Payload, hands it back.
+"""Fuzzer — the thin top layer the PwnGraph orchestrator calls.
 
-This is the thin top layer the PwnGraph orchestrator calls. Generators are
-single-responsibility (one attack class each); this file routes between them.
+All attack classes route through one ``LLMPayloadGenerator``
+(``pwngraph/fuzzer/llm_generator.py``) — there are no per-class hardcoded
+template pools. See that module's docstring for why, and for what stays as
+code (taxonomy/routing) vs. what's generated (attack content).
 """
 
 from __future__ import annotations
 
 import random
+from typing import TYPE_CHECKING
 
 from pwngraph.connector.base import ToolSpec
-from pwngraph.fuzzer.file_read_injection import FileReadInjectionGenerator
-from pwngraph.fuzzer.indirect_injection import IndirectInjectionGenerator
-from pwngraph.fuzzer.memory_poisoning import MemoryPoisoningGenerator
+from pwngraph.fuzzer.llm_generator import LLMClient, LLMPayloadGenerator
 from pwngraph.fuzzer.payload import AttackClass, Payload
-from pwngraph.fuzzer.prompt_exfiltration import PromptExfiltrationGenerator
-from pwngraph.fuzzer.shell_injection import ShellInjectionGenerator
-from pwngraph.fuzzer.tool_poisoning import ToolPoisoningGenerator
+
+if TYPE_CHECKING:
+    from pwngraph.recon import TargetProfile
 
 # Generic fallback queries used when no tool surface is available yet (e.g.
 # the very first baseline run before tools are enumerated). Once tools are
@@ -29,16 +30,19 @@ _FALLBACK_QUERIES = [
 
 
 class Fuzzer:
-    """Routes between per-class generators and exposes benign queries for baselines."""
+    """Generates adversarial payloads via ``LLMPayloadGenerator`` and exposes
+    benign queries for baselines."""
 
-    def __init__(self, seed: int | None = None) -> None:
+    def __init__(
+        self,
+        seed: int | None = None,
+        llm_client: LLMClient | None = None,
+        payload_cache_path: str | None = None,
+    ) -> None:
         self._rng = random.Random(seed)
-        self._indirect = IndirectInjectionGenerator(seed=seed)
-        self._tool_poison = ToolPoisoningGenerator(seed=seed)
-        self._prompt_exfil = PromptExfiltrationGenerator(seed=seed)
-        self._shell_inject = ShellInjectionGenerator(seed=seed)
-        self._file_read = FileReadInjectionGenerator(seed=seed)
-        self._memory_poison = MemoryPoisoningGenerator(seed=seed)
+        self._generator = LLMPayloadGenerator(
+            client=llm_client, seed=seed, cache_path=payload_cache_path
+        )
         # Built lazily on the first call to benign_query with tools.
         self._benign_pool: list[str] = []
 
@@ -46,22 +50,22 @@ class Fuzzer:
         self,
         attack_class: str,
         tools: list[ToolSpec],
+        context: dict | None = None,
+        target_profile: TargetProfile | None = None,
     ) -> Payload:
-        """Generate a single adversarial payload for the named class."""
+        """Generate a single adversarial payload for the named class.
+
+        ``context`` is an optional, generator-specific steering hint —
+        ``"desired_action_tool"`` (a tool name NEXUS wants this probe to
+        bias toward) and ``"recent_signals"`` (the Oracle's own signals from
+        recent failed attempts at this same target, letting the LLM adapt
+        instead of re-rolling blind — see
+        ``pwngraph.core.PwnGraph._run_nexus_loop``). ``target_profile`` is
+        recon's ``TargetProfile`` (``pwngraph.recon``), when available, used
+        to ground generation in the target's elicited objective.
+        """
         ac = AttackClass(attack_class)
-        if ac is AttackClass.INDIRECT_INJECTION:
-            return self._indirect.generate(tools)
-        if ac is AttackClass.TOOL_POISONING:
-            return self._tool_poison.generate(tools)
-        if ac is AttackClass.PROMPT_EXFILTRATION:
-            return self._prompt_exfil.generate(tools)
-        if ac is AttackClass.SHELL_INJECTION:
-            return self._shell_inject.generate(tools)
-        if ac is AttackClass.FILE_READ_INJECTION:
-            return self._file_read.generate(tools)
-        if ac is AttackClass.MEMORY_POISONING:
-            return self._memory_poison.generate(tools)
-        raise ValueError(f"Unknown attack class: {attack_class}")
+        return self._generator.generate(ac, tools, context=context, target_profile=target_profile)
 
     def benign_query(self, idx: int, tools: list[ToolSpec] | None = None) -> str:
         """Return a benign query for baseline runs.
@@ -72,6 +76,7 @@ class Fuzzer:
         picture of normal flow before adversarial deviation begins.
         """
         from pwngraph.fuzzer.delivery import baseline_for_tools
+
         if tools and not self._benign_pool:
             self._benign_pool = baseline_for_tools(tools, self._rng) * 4
             self._rng.shuffle(self._benign_pool)
@@ -79,5 +84,10 @@ class Fuzzer:
         return pool[idx % len(pool)]
 
     def cleanup(self) -> None:
-        """Best-effort cleanup of generator-side temp state."""
-        self._indirect.cleanup()
+        """Best-effort cleanup of generator-side temp state (carrier files)."""
+        self._generator.cleanup()
+
+    def record_delivery_outcome(self, tool_name: str, delivered: bool) -> None:
+        """Forward carrier delivery-success feedback to the generator so it
+        learns to stop targeting a tool that never echoes content back."""
+        self._generator.record_delivery_outcome(tool_name, delivered)

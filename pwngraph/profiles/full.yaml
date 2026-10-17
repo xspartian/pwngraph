@@ -1,8 +1,8 @@
 name: "Full scan"
 description: >
-  All six attack classes with enough trials to produce stable
-  Attack Success Rates with 95% confidence intervals.
+  All six attack classes with enough adaptive budget for NEXUS to build a
+  stable Attack Success Rate with 95% confidence intervals.
 attacks: all
-iterations: 25
-trials: 5
+budget: 40
 baseline_runs: 3
+nexus_level: 2

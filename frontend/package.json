@@ -1,0 +1,30 @@
+{
+  "name": "pwngraph-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Live PwnGraph viewer — Sigma.js/Graphology graph, findings, and evidence panels served by `pwngraph serve` (FastAPI).",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "build:pwngraph": "npm run build && node scripts/copy-to-pwngraph.mjs"
+  },
+  "dependencies": {
+    "@react-sigma/core": "^5.0.6",
+    "@xyflow/react": "^12.11.6",
+    "graphology": "^0.26.0",
+    "lucide-react": "^1.41.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2",
+    "sigma": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1"
+  }
+}

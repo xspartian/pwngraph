@@ -13,7 +13,8 @@ try:
     from langchain_core.callbacks import BaseCallbackHandler
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
-        "LangChain is not installed. Install with: pip install pwngraph[langchain]"
+        "langchain_core is not installed. Install with: pip install 'pwngraph[langchain]' "
+        "or 'pwngraph[langgraph]' (either provides langchain_core)."
     ) from exc
 
 log = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ class LangChainCallbackHandler(BaseCallbackHandler):
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         from pwngraph.util import flatten_text
+
         try:
             gen = response.generations[0][0]  # type: ignore[union-attr]
             text = gen.text or flatten_text(getattr(gen, "message", None))
@@ -123,5 +125,6 @@ class LangChainCallbackHandler(BaseCallbackHandler):
 
     def on_agent_finish(self, finish: Any, **kwargs: Any) -> None:
         from pwngraph.util import flatten_text
+
         output = getattr(finish, "return_values", {}).get("output")
         self.tracer.record_final_answer(content=flatten_text(output) or str(finish))

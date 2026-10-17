@@ -23,7 +23,7 @@ from pwngraph import PwnGraph
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run PwnGraph against the lab agent.")
     parser.add_argument("--real", action="store_true", help="Use a real LLM (requires OPENAI_API_KEY).")
-    parser.add_argument("--iterations", type=int, default=30, help="Adversarial iterations per class.")
+    parser.add_argument("--budget", type=int, default=30, help="Max adaptive probes NEXUS may run.")
     parser.add_argument("--baseline", type=int, default=3, help="Baseline benign runs.")
     parser.add_argument(
         "--attacks",
@@ -41,8 +41,9 @@ def main() -> int:
     pg = PwnGraph(agent=agent, seed=args.seed)
     pg.scan(
         attacks=args.attacks,
-        iterations=args.iterations,
+        budget=args.budget,
         baseline_runs=args.baseline,
+        authorized=True,
     )
 
     out = pg.report(args.out)

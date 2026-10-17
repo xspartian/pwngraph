@@ -32,7 +32,7 @@ class Tracer:
 
     def __init__(self) -> None:
         self._buf: list[TraceEvent] = []
-        self._stack: list[str] = []          # event_id stack for causality (fallback)
+        self._stack: list[str] = []  # event_id stack for causality (fallback)
         self._fw_to_event: dict[str, str] = {}  # framework run_id → our event_id
         self._run_id: str = ""
         self._root_event_id: str | None = None
@@ -51,6 +51,7 @@ class Tracer:
         attack_class: str | None = None,
     ) -> None:
         from pwngraph.types import _short_id
+
         self._buf = []
         self._stack = []
         self._fw_to_event = {}

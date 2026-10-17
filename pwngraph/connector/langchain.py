@@ -21,8 +21,17 @@ log = logging.getLogger(__name__)
 
 # Substrings that mark a transient/retryable error (rate limits, overload).
 _TRANSIENT_MARKERS = (
-    "429", "resource_exhausted", "rate limit", "rate_limit", "quota",
-    "503", "500", "overloaded", "temporarily", "unavailable", "timeout",
+    "429",
+    "resource_exhausted",
+    "rate limit",
+    "rate_limit",
+    "quota",
+    "503",
+    "500",
+    "overloaded",
+    "temporarily",
+    "unavailable",
+    "timeout",
 )
 # Input keys that take a *message list* rather than a string (LangGraph etc.).
 _MESSAGE_KEYS = ("messages", "history", "chat_history")
@@ -92,8 +101,15 @@ class LangChainConnector(Connector):
         payload: Any | None = None,
     ) -> str:
         # Tool poisoning: replace the target tool's executor(s) for this turn.
+        # Gated on the mechanism (a payload carrying poisoned_output metadata)
+        # rather than a specific attack_class, so any future poison_tool-mode
+        # generator gets the same delivery path for free.
         restores: list[tuple[Any, str, Any]] = []
-        if payload is not None and getattr(payload, "attack_class", None) == "tool_poisoning":
+        if (
+            payload is not None
+            and getattr(payload, "metadata", None)
+            and payload.metadata.get("poisoned_output")
+        ):
             restores = self._install_poisoned_tools(payload)
 
         try:
@@ -107,7 +123,8 @@ class LangChainConnector(Connector):
 
     def target_name(self) -> str:
         cls = self.agent.__class__.__name__
-        return f"LangChain {cls} ({len(self.list_tools())} tools)"
+        label = "LangChain" if _is_langchain_object(self.agent) else "Agent"
+        return f"{label} {cls} ({len(self.list_tools())} tools)"
 
     # ------------------------------------------------------------------
     # Input shaping
@@ -143,10 +160,13 @@ class LangChainConnector(Connector):
                 msg = str(exc).lower()
                 transient = any(m in msg for m in _TRANSIENT_MARKERS)
                 if transient and attempt < self._retries:
-                    wait = delay * (2 ** attempt)
+                    wait = delay * (2**attempt)
                     log.warning(
                         "Transient agent error (%s); retry %d/%d in %.0fs",
-                        exc.__class__.__name__, attempt + 1, self._retries, wait,
+                        exc.__class__.__name__,
+                        attempt + 1,
+                        self._retries,
+                        wait,
                     )
                     time.sleep(wait)
                     continue
@@ -203,12 +223,14 @@ class LangChainConnector(Connector):
                     continue
                 seen.add(name)
                 desc = fn.get("description", "") if isinstance(fn, dict) else ""
-                specs.append(ToolSpec(
-                    name=name,
-                    description=desc or "",
-                    tool_schema=fn.get("parameters", {}) if isinstance(fn, dict) else {},
-                    tags=_infer_tags(name, desc or ""),
-                ))
+                specs.append(
+                    ToolSpec(
+                        name=name,
+                        description=desc or "",
+                        tool_schema=fn.get("parameters", {}) if isinstance(fn, dict) else {},
+                        tags=_infer_tags(name, desc or ""),
+                    )
+                )
         if specs:
             log.info("Recovered %d bound tool(s) from schemas (cannot be poisoned).", len(specs))
         return specs
@@ -248,7 +270,8 @@ class LangChainConnector(Connector):
             log.warning(
                 "Agent input_keys=%s has no standard text key; using %r. "
                 "Pass input_key= to override if this is wrong.",
-                keys, keys[0],
+                keys,
+                keys[0],
             )
             return keys[0]
         return "input"
@@ -279,8 +302,12 @@ class LangChainConnector(Connector):
             if getattr(t, "name", None) != target_tool_name:
                 continue
             matched = True
-            for attr, fn in (("_run", _sync_poison), ("func", _sync_poison),
-                             ("_arun", _async_poison), ("coroutine", _async_poison)):
+            for attr, fn in (
+                ("_run", _sync_poison),
+                ("func", _sync_poison),
+                ("_arun", _async_poison),
+                ("coroutine", _async_poison),
+            ):
                 if getattr(t, attr, None) is not None:
                     restores.append((t, attr, getattr(t, attr)))
                     setattr(t, attr, fn)
@@ -289,7 +316,8 @@ class LangChainConnector(Connector):
         if target_tool_name and not matched:
             log.debug(
                 "Tool-poisoning target %r not found among agent tools; payload "
-                "will have no effect this run.", target_tool_name,
+                "will have no effect this run.",
+                target_tool_name,
             )
         return restores
 
@@ -297,6 +325,29 @@ class LangChainConnector(Connector):
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+_LANGCHAIN_MODULE_PREFIXES = ("langchain", "langchain_core", "langchain_community")
+
+
+def _is_langchain_object(agent: Any) -> bool:
+    """True if *agent* (or something in its class hierarchy) actually comes
+    from the langchain family of packages.
+
+    This connector is also the generic fallback for any object that merely
+    duck-types ``.invoke()``/``.tools`` (see ``make_connector``'s docstring —
+    "the loosest duck-type of the three") — a hand-rolled shim around a
+    framework-less agent reaches it exactly the same way a real
+    ``AgentExecutor`` does. Only call it "LangChain" in the report/CLI output
+    when that's actually true, checked structurally (where the class was
+    defined), not assumed from having landed in this connector.
+    """
+    for cls in type(agent).__mro__:
+        mod = getattr(cls, "__module__", "") or ""
+        if mod.startswith(_LANGCHAIN_MODULE_PREFIXES):
+            return True
+    return False
+
 
 def _extract_output(result: Any) -> Any:
     """Pull the answer field out of an AgentExecutor result dict."""
@@ -312,12 +363,12 @@ def _tool_schema(tool: Any) -> dict[str, Any]:
     args_schema = getattr(tool, "args_schema", None)
     if args_schema is None:
         return {}
-    if hasattr(args_schema, "model_json_schema"):       # pydantic v2
+    if hasattr(args_schema, "model_json_schema"):  # pydantic v2
         try:
             return args_schema.model_json_schema()
         except Exception:  # noqa: BLE001
             return {}
-    if hasattr(args_schema, "schema"):                  # pydantic v1
+    if hasattr(args_schema, "schema"):  # pydantic v1
         try:
             return args_schema.schema()
         except Exception:  # noqa: BLE001

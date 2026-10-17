@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pwngraph.types import AttackPath, Finding, NodeType, TraceEvent
+from pwngraph.types import Finding, NodeType, TraceEvent
 
 _CANARY_RE = re.compile(r"\bPWN-[A-F0-9]{8}\b")
 
@@ -30,6 +30,7 @@ _CANARY_RE = re.compile(r"\bPWN-[A-F0-9]{8}\b")
 # ---------------------------------------------------------------------------
 # Delivered-vs-defended
 # ---------------------------------------------------------------------------
+
 
 def delivery_status(
     run_events: list[TraceEvent],
@@ -44,15 +45,12 @@ def delivery_status(
     """
     if not target_tool:
         return "unknown"
-    called = any(
-        ev.node_type is NodeType.TOOL_CALL and ev.name == target_tool
-        for ev in run_events
-    )
+    called = any(ev.node_type is NodeType.TOOL_CALL and ev.name == target_tool for ev in run_events)
     return "delivered" if called else "not_called"
 
 
 def delivery_report(
-    run_records: list[Any],   # list[RunRecord] — typed as Any to avoid circular import
+    run_records: list[Any],  # list[RunRecord] — typed as Any to avoid circular import
 ) -> dict[str, Any]:
     """Summarise delivery across all adversarial runs.
 
@@ -92,6 +90,7 @@ def delivery_report(
 # ---------------------------------------------------------------------------
 # Replayable PoC
 # ---------------------------------------------------------------------------
+
 
 def export_poc(
     finding: Finding,
@@ -144,16 +143,14 @@ def export_poc(
         "replay_command": (
             f"pwngraph scan --target {target_spec} "
             f"--attacks {finding.attack_class} "
-            f"--iterations 10 --trials 5 --seed 0 --out ./poc_replay"
+            f"--budget 10 --exhaustive --seed 0 --authorized --out ./poc_replay"
         ),
         "steps_to_reproduce": finding.steps_to_reproduce,
         "impact": finding.impact,
         "remediation": finding.remediation,
         "evidence": {k: str(v) for k, v in finding.evidence.items()},
     }
-    (poc_dir / "poc.json").write_text(
-        json.dumps(record, indent=2, default=str), encoding="utf-8"
-    )
+    (poc_dir / "poc.json").write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
 
     return poc_dir
 
@@ -167,10 +164,7 @@ def _poc_markdown(
 ) -> str:
     steps = "\n".join(f"{i+1}. {s}" for i, s in enumerate(finding.steps_to_reproduce))
     evidence = finding.evidence.get("attack_success_rate")
-    asr_line = (
-        f"**Attack Success Rate:** {evidence*100:.0f}%  \n"
-        if evidence is not None else ""
-    )
+    asr_line = f"**Attack Success Rate:** {evidence*100:.0f}%  \n" if evidence is not None else ""
     return f"""# PoC: {finding.title}
 
 **Severity:** {finding.severity.value.upper()}
@@ -199,7 +193,7 @@ def _poc_markdown(
 pwngraph scan \\
   --target {target_spec} \\
   --attacks {finding.attack_class} \\
-  --iterations 10 --trials 5 --seed 0 \\
+  --budget 10 --exhaustive --seed 0 --authorized \\
   --out ./poc_replay
 ```
 

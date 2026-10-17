@@ -5,7 +5,7 @@ This is the public entry point users interact with:
     from pwngraph import PwnGraph
 
     pg = PwnGraph(agent=my_langchain_agent)
-    pg.scan(attacks=["indirect_injection", "tool_poisoning"], iterations=50)
+    pg.scan(attacks=["indirect_injection", "tool_poisoning"], budget=50, authorized=True)
     pg.report("./out")
 """
 
@@ -15,13 +15,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from pwngraph.attackpath import rank_findings, rank_paths
+from pwngraph.backend import GraphBackend
 from pwngraph.connector import Connector, make_connector
 from pwngraph.cvss import cvss_for, severity_from_cvss
-from pwngraph.owasp import coverage_matrix, owasp_for_finding
-from pwngraph.poc import delivery_report, export_all_pocs
-from pwngraph.sarif import write_sarif
 from pwngraph.fuzzer import Fuzzer
 from pwngraph.graph import GraphBuilder
+from pwngraph.nexus import AttackState, Nexus, NexusStatus, screen_payload
 from pwngraph.oracle import (
     BehavioralOracle,
     BehavioralProfile,
@@ -29,7 +29,12 @@ from pwngraph.oracle import (
     RunVerdict,
     aggregate_asr,
 )
+from pwngraph.owasp import coverage_matrix, owasp_for_finding
+from pwngraph.poc import delivery_report, export_all_pocs
+from pwngraph.recon import TargetProfile, run_recon
+from pwngraph.redact import redact_secrets
 from pwngraph.reporter import Reporter
+from pwngraph.sarif import write_sarif
 from pwngraph.tracer import Tracer
 from pwngraph.types import AttackPath, EdgeType, Finding, NodeType, TraceEvent
 
@@ -50,6 +55,24 @@ class PwnGraph:
         once additional adapters land in v2.
     seed : int, optional
         RNG seed for reproducible fuzzing. Default: None (random).
+    graph_backend : GraphBackend, optional
+        Where the attack graph is stored — requires a reachable Neo4j server
+        (see ``pwngraph.backend``). Defaults to ``PWNGRAPH_NEO4J_*`` env vars
+        (falling back to ``docker-compose.yml``'s dev instance) when omitted;
+        pass one explicitly to point at a different server/database, e.g. for
+        two scans you intend to diff against different Neo4j databases.
+    llm_client : LLMClient, optional
+        Override the fuzzer's payload-generation LLM client (see
+        ``pwngraph.fuzzer.llm_generator.LLMClient``). Defaults to a real
+        OpenAI-backed client reading ``OPENAI_API_KEY`` — every attack
+        payload is LLM-generated, there is no static-template fallback.
+        Tests pass a fake client here instead of requiring a real API key.
+    payload_cache_path : str, optional
+        Replay generated payloads from (and record them into) this JSON
+        file when ``seed`` is also set — the reproducibility mitigation for
+        ``--seed``/``pwngraph diff`` now that content is LLM-generated. See
+        ``pwngraph.fuzzer.llm_generator.LLMPayloadGenerator``. Off by
+        default: a scan is genuinely dynamic every run unless opted in.
     """
 
     def __init__(
@@ -58,12 +81,17 @@ class PwnGraph:
         connector: Connector | None = None,
         seed: int | None = None,
         input_key: str | None = None,
+        graph_backend: GraphBackend | None = None,
+        llm_client: Any | None = None,
+        payload_cache_path: str | None = None,
     ) -> None:
         self.agent = agent
         self.connector: Connector = connector or make_connector(agent, input_key=input_key)
         self.tracer = Tracer()
-        self.fuzzer = Fuzzer(seed=seed)
-        self.graph_builder = GraphBuilder()
+        self.fuzzer = Fuzzer(
+            seed=seed, llm_client=llm_client, payload_cache_path=payload_cache_path
+        )
+        self.graph_builder = GraphBuilder(backend=graph_backend)
         self.reporter = Reporter()
 
         # Populated by scan()
@@ -75,6 +103,19 @@ class PwnGraph:
         self.verdicts: list[RunVerdict] = []
         self.asr: dict[str, Any] = {}
         self._delivery: dict[str, Any] = {}
+        # Populated by run_static_analysis() — the possible/observed/
+        # validated/exploited surface, or None if it was never run (or the
+        # target wasn't a statically-parseable file locator).
+        self.structural_graph: Any = None
+        # Populated by scan() — the final AttackState NEXUS built up over the
+        # adaptive loop. None only until the first scan() call completes.
+        self.nexus_state: AttackState | None = None
+        # Populated by scan() — what recon learned about the target before
+        # any adversarial payload (tools, elicited purpose, confirmed
+        # chains, the derived attack plan). See pwngraph.recon.
+        self.target_profile: TargetProfile | None = None
+        # Populated by report() — path to the offline graph.json snapshot.
+        self.graph_path: Path | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -83,44 +124,100 @@ class PwnGraph:
     def scan(
         self,
         attacks: list[str] | str = "all",
-        iterations: int = 25,
+        budget: int = 25,
         baseline_runs: int = 3,
-        trials: int = 1,
         max_calls: int | None = None,
         progress: bool = True,
         custom_payloads: list | None = None,
+        payload_trials: int = 1,
+        recon_budget: int = 6,
+        nexus_level: int = 1,
+        nexus_exhaustive: bool = False,
+        authorized: bool = False,
     ) -> list[AttackPath]:
-        """Run a full scan: baseline → fuzz → trace → oracle → graph build.
+        """Run a full scan: baseline → recon → adaptive probing → oracle → graph build.
+
+        PwnGraph probes adaptively: NEXUS observes each probe's outcome (via
+        the same BehavioralOracle) and decides the next attack class/tool
+        before the Fuzzer generates the next payload — see ``pwngraph.nexus``.
+        There is no fixed "N payloads per class" plan; ``budget`` is the total
+        number of adaptive probes NEXUS may spend, and it can stop earlier on
+        its own once confidence plateaus (see ``nexus_exhaustive``).
 
         Parameters
         ----------
         attacks : list[str] or "all"
-            Which attack classes to run. Valid: ``"indirect_injection"``,
-            ``"tool_poisoning"``, ``"prompt_exfiltration"``, ``"shell_injection"``,
-            ``"file_read_injection"``, ``"memory_poisoning"``, or ``"all"``.
-        iterations : int
-            Number of distinct adversarial payloads per attack class.
+            Which attack classes NEXUS may draw from. Valid:
+            ``"indirect_injection"``, ``"tool_poisoning"``, ``"prompt_exfiltration"``,
+            ``"shell_injection"``, ``"file_read_injection"``, ``"memory_poisoning"``,
+            or ``"all"``.
+        budget : int
+            Interaction budget — the max number of adaptive probes NEXUS may
+            run (separate from ``max_calls``, which remains a hard ceiling
+            over the whole scan including baseline and recon).
         baseline_runs : int
             Benign runs first, to learn the normal execution shape. These seed
             both the graph and the BehavioralOracle's diff baseline, so
             dangerous deviations stand out.
-        trials : int
-            How many times to re-deliver *each* payload. LLMs are stochastic, so
-            ``trials > 1`` turns a single observation into an Attack Success Rate
-            (successes / trials) with a Wilson confidence interval. Default 1
-            preserves the original single-shot behavior.
         max_calls : int | None
-            Hard cap on total agent invocations (baseline + adversarial). When
-            the cap is reached the scan stops early with whatever results it has.
-            Useful to prevent surprise API bill overruns on expensive models.
+            Hard cap on total agent invocations (baseline + recon + adaptive
+            probes). When the cap is reached the scan stops early with
+            whatever results it has. Useful to prevent surprise API bill
+            overruns on expensive models.
         progress : bool
             Show a Rich progress bar in the terminal (default True).
+        custom_payloads : list, optional
+            User-supplied payloads (see ``pwngraph.fuzzer.custom_payload``),
+            delivered before NEXUS's own adaptive probing starts.
+        payload_trials : int
+            How many times to re-deliver *each* payload in ``custom_payloads``.
+            LLMs are stochastic, so ``payload_trials > 1`` turns a single
+            observation into an Attack Success Rate (successes / trials) with
+            a Wilson confidence interval. Has no effect on NEXUS's own
+            probes — it decides for itself whether a hit is worth re-probing
+            (see ``NexusAction.VALIDATE``).
+        recon_budget : int
+            Max new agent calls spent on pre-attack recon (see
+            ``pwngraph.recon``): eliciting the agent's stated purpose and
+            confirming tool-to-tool chains before any adversarial payload.
+            Tool-behavior profiling itself costs nothing extra — it reads the
+            baseline runs above. Set to 0 to skip recon's own calls entirely
+            (the profile is still built, just from baseline data alone).
+            Counted toward ``max_calls`` like every other call this method makes.
+        nexus_level : int
+            Adaptive autonomy/depth, 1-5 (see ``pwngraph.nexus.levels``).
+            Higher levels reason harder about each probe (validation, chain
+            pursuit, reasoner-backed hypotheses) — they do not run more
+            probes; ``budget`` alone controls that.
+        nexus_exhaustive : bool
+            Disable NEXUS's confidence-based early stop. By default NEXUS
+            stops once every class/tool has at least one attempt and
+            confidence is high — efficient, but a class that failed its one
+            probe before that gate fired never gets its own failure-retry
+            cycle. With this on, NEXUS only stops on budget exhaustion or a
+            genuine dead end (no candidate strategy left) — use it when you
+            want every class given a real, multi-attempt shot regardless of
+            how quickly something else looks "good enough."
+        authorized : bool
+            Required. NEXUS decides its own next move autonomously, probe
+            after probe, with no human reviewing each step — an explicit
+            acknowledgment that the target is one you own or have written
+            permission to test is the boundary that keeps that autonomy
+            scoped (see README's "Responsible Use").
 
         Returns
         -------
         list[AttackPath]
             Dangerous paths discovered.
         """
+        if not authorized:
+            raise PermissionError(
+                "scan() requires authorized=True: NEXUS probes autonomously, "
+                "with no human reviewing each step, so it must be explicitly acknowledged "
+                "that the target is one you own or have written permission to test. "
+                "Pass authorized=True (CLI: --authorized) once that's true. "
+                "See README.md's 'Responsible Use' section."
+            )
         if attacks == "all":
             attack_list = [
                 "indirect_injection",
@@ -136,43 +233,39 @@ class PwnGraph:
             attack_list = [attacks]
         else:
             attack_list = list(attacks)
-        trials = max(1, int(trials))
+        payload_trials = max(1, int(payload_trials))
 
         log.info("Enumerating target tools…")
         tools = self.connector.list_tools()
         log.info("Target exposes %d tools: %s", len(tools), [t.name for t in tools])
+        action_sinks = {t.name for t in tools if t.is_action_sink}
 
-        # 1) Baseline — record what normal use looks like.
-        # Pass the real tool list so baseline queries exercise the agent's
-        # actual capabilities rather than generic weather/news questions.
-        total_adv = len(attack_list) * iterations * trials
-        total_calls = baseline_runs + total_adv
-        if max_calls is not None and total_calls > max_calls:
-            log.warning(
-                "Cost guard: scan would make %d calls but --max-calls=%d. "
-                "Scaling down iterations to fit budget.",
-                total_calls, max_calls,
-            )
-            budget_adv = max(0, max_calls - baseline_runs)
-            per_class = max(1, budget_adv // (len(attack_list) * trials))
-            iterations = per_class
-            log.info("Adjusted iterations → %d per class", iterations)
-
+        # NEXUS enforces max_calls live inside its own loop (its "budget" is
+        # already the cap) — no pre-scan cost-guard scaling needed here.
         calls_made = 0
 
         try:
             from rich.progress import (
-                BarColumn, MofNCompleteColumn, Progress,
-                SpinnerColumn, TextColumn, TimeRemainingColumn,
+                BarColumn,
+                MofNCompleteColumn,
+                Progress,
+                SpinnerColumn,
+                TextColumn,
+                TimeRemainingColumn,
             )
-            _prog = Progress(
-                SpinnerColumn(),
-                TextColumn("[bold blue]{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TimeRemainingColumn(),
-                transient=True,
-            ) if progress else None
+
+            _prog = (
+                Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold blue]{task.description}"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TimeRemainingColumn(),
+                    transient=True,
+                )
+                if progress
+                else None
+            )
         except ImportError:
             _prog = None
 
@@ -180,9 +273,10 @@ class PwnGraph:
             if _prog:
                 return _prog
             from contextlib import nullcontext
+
             return nullcontext()
 
-        total_steps = baseline_runs + len(attack_list) * iterations * trials
+        total_steps = baseline_runs + recon_budget + budget
         with _ctx() as prog:
             task = prog.add_task("Scanning…", total=total_steps) if prog else None
 
@@ -196,11 +290,58 @@ class PwnGraph:
                 if prog and task is not None:
                     prog.advance(task)
 
-            # 2a) Custom payloads — delivered before built-in fuzzer runs
+            # Recon — before any adversarial payload, learn what this agent
+            # is for and which tools chain into which (see pwngraph.recon).
+            # Its own probes are ordinary benign runs (adversarial=False),
+            # so they land in self._run_records/self.events exactly like a
+            # baseline run and strengthen the BehavioralProfile below too.
+            log.info("Running recon (budget=%d)…", recon_budget)
+            recon_budget_eff = recon_budget
+            if max_calls is not None:
+                recon_budget_eff = max(0, min(recon_budget, max_calls - calls_made))
+
+            def _recon_probe(user_input: str) -> RunRecord:
+                self._run_one(user_input, adversarial=False)
+                return self._run_records[-1]
+
+            self.target_profile = run_recon(
+                target_name=self.connector.target_name(),
+                tools=tools,
+                attack_classes=attack_list,
+                baseline_records=[r for r in self._run_records if not r.adversarial],
+                probe=_recon_probe,
+                budget=recon_budget_eff,
+            )
+            calls_made += self.target_profile.calls_used
+            if prog and task is not None:
+                for _ in range(self.target_profile.calls_used):
+                    prog.advance(task)
+            log.info(
+                "Recon: %d call(s), %d tool(s), objective=%r",
+                self.target_profile.calls_used,
+                len(self.target_profile.tools),
+                self.target_profile.objective,
+            )
+
+            # The BehavioralOracle only needs the *benign* baseline, already
+            # complete at this point — building it here (rather than after
+            # every adversarial run finishes) lets NEXUS score each probe as
+            # it happens. Includes recon's own benign probes above — more
+            # baseline signal, same "normal behavior" semantics
+            # BehavioralProfile already has.
+            baseline_records = [r for r in self._run_records if not r.adversarial]
+            profile = BehavioralProfile.from_runs(baseline_records, action_sinks)
+            oracle = BehavioralOracle(action_sinks=action_sinks, profile=profile)
+
+            # 2a) Custom payloads — delivered before NEXUS's own adaptive probing
             if custom_payloads:
-                log.info("Delivering %d custom payload(s) × %d trials…", len(custom_payloads), trials)
+                log.info(
+                    "Delivering %d custom payload(s) × %d trials…",
+                    len(custom_payloads),
+                    payload_trials,
+                )
                 for cp in custom_payloads:
-                    for _t in range(trials):
+                    for _t in range(payload_trials):
                         if max_calls and calls_made >= max_calls:
                             break
                         self._run_one(
@@ -212,88 +353,247 @@ class PwnGraph:
                         calls_made += 1
                         if prog and task is not None:
                             prog.advance(task)
-
-            # 2b) Built-in fuzzer — one payload per iteration, re-delivered `trials` times
-            for attack_class in attack_list:
-                log.info(
-                    "Fuzzing class=%s iterations=%d trials=%d",
-                    attack_class, iterations, trials,
-                )
-                for _ in range(iterations):
-                    if max_calls and calls_made >= max_calls:
-                        log.warning("Cost guard: max_calls=%d reached, stopping early.", max_calls)
-                        break
-                    payload = self.fuzzer.next_payload(attack_class, tools=tools)
-                    for _t in range(trials):
-                        if max_calls and calls_made >= max_calls:
-                            break
-                        self._run_one(
-                            payload.delivery_input,
-                            adversarial=True,
-                            payload_id=payload.payload_id,
-                            payload=payload,
+                        # Custom-payload runs happen before the NEXUS loop
+                        # starts, so ingest each one here the same way
+                        # _run_nexus_loop ingests its own probes (one record
+                        # at a time) — otherwise these events would never
+                        # reach the graph at all.
+                        self.graph_builder.ingest(
+                            self._run_records[-1].events, action_sinks=action_sinks
                         )
-                        calls_made += 1
-                        if prog and task is not None:
-                            prog.advance(task)
 
-        action_sinks = {t.name for t in tools if t.is_action_sink}
+            # 2b) NEXUS — adaptive closed loop. See pwngraph.nexus and
+            # _run_nexus_loop's own docstring.
+            calls_made = self._run_nexus_loop(
+                attack_list,
+                tools,
+                oracle=oracle,
+                action_sinks=action_sinks,
+                budget=budget,
+                level=nexus_level,
+                exhaustive=nexus_exhaustive,
+                max_calls=max_calls,
+                calls_made=calls_made,
+                prog=prog,
+                task=task,
+            )
 
-        # 3) Behavioral oracle
-        baseline_records = [r for r in self._run_records if not r.adversarial]
+        # 3) Behavioral oracle rollup. NEXUS already scored each run as it
+        # happened (to make its own decisions); recomputing here is
+        # harmless — evaluate_run is pure — and gives one shared source of
+        # truth for self.verdicts.
         adv_records = [r for r in self._run_records if r.adversarial]
-        profile = BehavioralProfile.from_runs(baseline_records, action_sinks)
-        oracle = BehavioralOracle(action_sinks=action_sinks, profile=profile)
         self.verdicts = [oracle.evaluate_run(r) for r in adv_records]
         self.asr = aggregate_asr(self.verdicts)
         self._delivery = delivery_report(self._run_records)
 
-        # 4) Build the graph and extract dangerous paths.
-        log.info("Building attack graph from %d events…", len(self.events))
-        self.graph_builder.ingest(self.events, action_sinks=action_sinks)
+        # 3b) Redact credential-shaped values the agent's tools actually
+        # returned (or echoed in its final answer) before anything is
+        # persisted. The oracle already scored these runs against the raw
+        # content above; nothing past this point — Neo4j, trace.json,
+        # findings, SARIF, PoC bundles — needs the literal secret value. Only
+        # TOOL_RESULT/FINAL_ANSWER content is touched: USER_INPUT/TOOL_CALL
+        # content is the fuzzer's own payload text, which canary tracking and
+        # exfil-destination classification downstream still need intact.
+        for ev in self.events:
+            if ev.node_type in (NodeType.TOOL_RESULT, NodeType.FINAL_ANSWER):
+                ev.content = redact_secrets(ev.content)
+
+        # 4) Extract dangerous paths from the graph. Every run's events were
+        # already ingested incrementally as they happened (custom payloads
+        # above, NEXUS's own probes inside _run_nexus_loop) — Neo4j's
+        # add_edge is a CREATE, not a MERGE (see neo4j_backend.py), so
+        # re-ingesting the same events here would double-write edges.
         self.graph_builder.attach_behavioral_sinks(self.verdicts)
         self.paths = self.graph_builder.find_dangerous_paths()
         self.findings = self._synthesize_findings(self.paths)
+        # Re-rank by confidence/ASR-weighted severity — GraphBuilder's own
+        # sort is severity alone, so a low-confidence CRITICAL echo would
+        # otherwise sit above a high-confidence HIGH finding the oracle is
+        # actually sure about. See pwngraph.attackpath for the weighting.
+        self.paths = rank_paths(self.paths)
+        self.findings = rank_findings(self.findings)
 
         log.info(
             "Discovered %d dangerous attack paths (%d findings). "
             "ASR: %.1f%% (%d/%d). Delivery rate: %.1f%%.",
-            len(self.paths), len(self.findings),
+            len(self.paths),
+            len(self.findings),
             self.asr.get("overall", {}).get("asr", 0.0) * 100,
             self.asr.get("overall", {}).get("successes", 0),
             self.asr.get("overall", {}).get("trials", 0),
             self._delivery.get("delivery_rate", 0.0) * 100,
         )
+
+        # 5) Persist the reportable layer (findings/ASR/OWASP/grade) alongside
+        # the graph, so `pwngraph serve` can show a full report for this scan
+        # after this process exits — see pwngraph.report_store.
+        self._persist_report(tools)
         return self.paths
 
-    def report(self, out_dir: str | Path) -> Path:
-        """Render the interactive graph + HTML report to ``out_dir``.
+    def _persist_report(self, tools: list[Any]) -> None:
+        """Write this scan's report into the graph backend.
 
-        Returns the path to the main report HTML.
+        Best-effort: a scan that produced real findings shouldn't be thrown
+        away because the report snapshot failed to write. The findings are
+        still in memory for ``report()`` and the Python API either way.
+        """
+        from pwngraph.report_store import persist_scan_report
+
+        try:
+            persist_scan_report(
+                self.graph_builder.graph,
+                self.graph_builder.scan_id,
+                target_name=self.connector.target_name(),
+                tool_inventory=[t.name for t in tools],
+                findings=self.findings,
+                asr=self.asr,
+                owasp_coverage=self.owasp_coverage(),
+                risk_grade=self.risk_grade(),
+                summary={
+                    "paths_dangerous": len(self.paths),
+                    "paths_high_confidence": sum(
+                        1 for p in self.paths if getattr(p, "confidence", "high") == "high"
+                    ),
+                    "events_total": len(self.events),
+                    "delivery": self._delivery,
+                },
+                scanned_at=self.graph_builder.scanned_at,
+            )
+        except Exception as exc:  # noqa: BLE001 — never fail a scan over its snapshot
+            log.warning("Could not persist scan report (scan itself is unaffected): %s", exc)
+
+        # Recon's target profile — otherwise purely in-memory and lost the
+        # moment this process exits, same best-effort convention as the
+        # report/NEXUS-state persists around it.
+        if self.target_profile is not None:
+            from pwngraph.report_store import persist_target_profile
+
+            try:
+                persist_target_profile(
+                    self.graph_builder.graph, self.graph_builder.scan_id, self.target_profile
+                )
+            except Exception as exc:  # noqa: BLE001 — never fail a scan over its snapshot
+                log.warning("Could not persist target profile (scan itself is unaffected): %s", exc)
+
+        # NEXUS's own decision history (observations + rationale, hypotheses)
+        # is otherwise purely in-memory and lost the moment this process
+        # exits — persist it the same best-effort way as the report above,
+        # so pwngraph serve's Logs tab can show *why* NEXUS chose each probe
+        # for scans it didn't run in-process. None for static-mode scans.
+        if self.nexus_state is not None:
+            from pwngraph.report_store import persist_nexus_state
+
+            try:
+                persist_nexus_state(
+                    self.graph_builder.graph, self.graph_builder.scan_id, self.nexus_state
+                )
+            except Exception as exc:  # noqa: BLE001 — never fail a scan over its snapshot
+                log.warning("Could not persist NEXUS state (scan itself is unaffected): %s", exc)
+
+    def run_static_analysis(self, target: str) -> Any:
+        """Reconcile a static AST pass over ``target``'s source with this
+        scan's runtime graph — the possible/observed/validated/exploited
+        evidence ladder (see ``pwngraph.static``). Call after ``scan()``.
+
+        ``target`` is the same locator passed to ``pwngraph scan --target``.
+        Only a file locator (``path/to/agent.py:factory``) can be statically
+        parsed; a module-style locator (``pkg.module:factory``) has no
+        filesystem path to read, so this returns ``None`` — a deliberate skip,
+        not an error, the same "degrade honestly" stance the extractor itself
+        takes on a syntax error.
+
+        Sets and returns ``self.structural_graph``.
+        """
+        from pwngraph.static import (
+            extract_langchain_tools_from_file,
+            normalize_target_id,
+            persist_structural_graph,
+            reconcile,
+        )
+
+        if ":" not in target:
+            log.info("Static analysis skipped: %r has no file:factory shape.", target)
+            return None
+
+        source_path = Path(target.rsplit(":", 1)[0])
+        if source_path.suffix != ".py" or not source_path.is_file():
+            log.info(
+                "Static analysis skipped: %s is not a readable .py file "
+                "(module-style targets can't be parsed statically).",
+                source_path,
+            )
+            return None
+
+        target_id = normalize_target_id(target)
+        static_tools = extract_langchain_tools_from_file(source_path)
+        self.structural_graph = reconcile(
+            target_id,
+            static_tools,
+            self.graph_builder.graph,
+            self.paths,
+            scan_id=self.graph_builder.scan_id,
+        )
+        # Write the evidence ladder into the same backend the runtime graph
+        # lives in — without this, `evidence_ladder.json` is the only place
+        # it's readable, and `pwngraph.queries` (Cypher/CLI) has nothing to see.
+        persist_structural_graph(
+            self.structural_graph, self.graph_builder.graph, scan_id=self.graph_builder.scan_id
+        )
+        log.info(
+            "Static analysis: %d tool(s) found in source, coverage=%s",
+            len(static_tools),
+            self.structural_graph.coverage(),
+        )
+        return self.structural_graph
+
+    def report(self, out_dir: str | Path) -> Path:
+        """Write this scan's machine-readable artifacts to ``out_dir``.
+
+        No HTML is produced. The findings write-up — severity, CVSS, steps to
+        reproduce, impact, remediation, ASR, OWASP coverage, risk grade — lives
+        in ``pwngraph serve`` now, read live from the same database the scan
+        wrote to (see ``pwngraph.report_store``), so there is no static file to
+        go stale or to keep in sync with the graph beside it.
+
+        What lands on disk is the data, not a rendering of it: ``graph.json``
+        (nodes/edges/findings), ``trace.json``, ``asr.json``,
+        ``delivery.json``, ``findings.sarif`` for CI, ``evidence_ladder.json``
+        when static analysis ran, and per-finding ``poc/`` bundles.
+
+        Returns the output directory.
         """
         out_path = Path(out_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        graph_html = out_path / "attack_graph.html"
-        report_html = out_path / "report.html"
         trace_json = out_path / "trace.json"
         asr_json = out_path / "asr.json"
+        target_name = self.connector.target_name()
 
-        self.reporter.render_graph(self.graph_builder.graph, graph_html, paths=self.paths)
-        self.reporter.render_report(
-            paths=self.paths,
-            findings=self.findings,
-            output_path=report_html,
-            target_name=self.connector.target_name(),
-            tool_inventory=[t.name for t in self.connector.list_tools()],
-            asr=self.asr,
-            owasp_coverage=self.owasp_coverage(),
-        )
         self.reporter.dump_trace(self.events, trace_json)
+
+        from pwngraph.reporter.graph_export import export_graph_json
+
+        self.graph_path = export_graph_json(
+            self.graph_builder.graph,
+            self.graph_builder.scan_id,
+            out_path / "graph.json",
+            target_name=target_name,
+            dangerous_paths=self.paths,
+        )
 
         # Machine-readable ASR rollup.
         import json
+
         asr_json.write_text(json.dumps(self.asr, indent=2, default=str), encoding="utf-8")
+
+        # Static + runtime evidence ladder, when run_static_analysis() ran.
+        if self.structural_graph is not None:
+            evidence_json = out_path / "evidence_ladder.json"
+            evidence_json.write_text(
+                json.dumps(self.structural_graph.to_summary(), indent=2, default=str),
+                encoding="utf-8",
+            )
 
         # SARIF export (plugs into GitHub Actions, VS Code, CI gates).
         sarif_path = out_path / "findings.sarif"
@@ -311,8 +611,12 @@ class PwnGraph:
             json.dumps(self._delivery, indent=2, default=str), encoding="utf-8"
         )
 
-        log.info("Report written to %s", report_html)
-        return report_html
+        log.info(
+            "Artifacts written to %s (graph %s). Browse the findings with `pwngraph serve`.",
+            out_path,
+            self.graph_path,
+        )
+        return out_path
 
     # ------------------------------------------------------------------
     # Metrics
@@ -327,12 +631,8 @@ class PwnGraph:
         ``paths_high_confidence`` / ``confirmed_findings`` for the precision story.
         """
         total_iter = sum(1 for e in self.events if e.metadata.get("is_root"))
-        adv_iter = sum(
-            1 for e in self.events if e.metadata.get("is_root") and e.is_adversarial
-        )
-        high_conf = sum(
-            1 for p in self.paths if getattr(p, "confidence", "high") == "high"
-        )
+        adv_iter = sum(1 for e in self.events if e.metadata.get("is_root") and e.is_adversarial)
+        high_conf = sum(1 for p in self.paths if getattr(p, "confidence", "high") == "high")
         yield_rate = round(len(self.paths) / adv_iter, 3) if adv_iter else 0.0
 
         overall = self.asr.get("overall", {})
@@ -375,6 +675,7 @@ class PwnGraph:
           - 20 pts max: breadth (fraction of testable OWASP IDs confirmed)
         """
         from pwngraph.types import Severity as Sev
+
         sev_weight = {Sev.CRITICAL: 10, Sev.HIGH: 6, Sev.MEDIUM: 3, Sev.LOW: 1, Sev.INFO: 0}
         raw_sev = sum(sev_weight.get(f.severity, 0) for f in self.findings)
         # Cap at 40 (4+ critical = max)
@@ -416,16 +717,16 @@ class PwnGraph:
             }[letter],
         }
 
-    def defense_diff(self, other: "PwnGraph") -> dict[str, Any]:
+    def defense_diff(self, other: PwnGraph) -> dict[str, Any]:
         """Compare this scan (after a defense) against *other* (before).
 
         Shows the ASR delta, finding delta, and grade change so you can
         measure whether a defense actually reduced exploitability.
 
         Usage:
-            before = PwnGraph(agent, seed=0); before.scan(iterations=20, trials=5)
+            before = PwnGraph(agent, seed=0); before.scan(budget=20, authorized=True)
             # apply defense to agent
-            after  = PwnGraph(agent, seed=0); after.scan(iterations=20, trials=5)
+            after  = PwnGraph(agent, seed=0); after.scan(budget=20, authorized=True)
             print(after.defense_diff(before))
         """
         b_asr = other.asr.get("overall", {}).get("asr", 0.0)
@@ -434,20 +735,24 @@ class PwnGraph:
         a_grade = self.risk_grade()
         return {
             "asr_before": round(b_asr, 3),
-            "asr_after":  round(a_asr, 3),
-            "asr_delta":  round(a_asr - b_asr, 3),
+            "asr_after": round(a_asr, 3),
+            "asr_delta": round(a_asr - b_asr, 3),
             "asr_reduction_pct": round((b_asr - a_asr) / b_asr * 100, 1) if b_asr else 0.0,
             "findings_before": len(other.findings),
-            "findings_after":  len(self.findings),
-            "findings_delta":  len(self.findings) - len(other.findings),
+            "findings_after": len(self.findings),
+            "findings_delta": len(self.findings) - len(other.findings),
             "grade_before": b_grade["grade"],
-            "grade_after":  a_grade["grade"],
+            "grade_after": a_grade["grade"],
             "score_before": b_grade["score"],
-            "score_after":  a_grade["score"],
+            "score_after": a_grade["score"],
             "verdict": (
-                "Defense effective" if a_asr < b_asr
-                else "No improvement" if a_asr == b_asr
-                else "Regression — agent is MORE vulnerable after the change"
+                "Defense effective"
+                if a_asr < b_asr
+                else (
+                    "No improvement"
+                    if a_asr == b_asr
+                    else "Regression — agent is MORE vulnerable after the change"
+                )
             ),
         }
 
@@ -477,25 +782,23 @@ class PwnGraph:
                 continue
             adv_ev = next((e for e in p.events if e.payload_id), None)
             payload_id = adv_ev.payload_id if adv_ev else "unknown"
-            attack_class = (
-                (adv_ev.metadata.get("attack_class") if adv_ev else None) or "unknown"
-            )
+            attack_class = (adv_ev.metadata.get("attack_class") if adv_ev else None) or "unknown"
             adv_edges = sorted({e.value for e in p.edge_types if e.is_adversarial})
 
             # Pull template metadata when this path came from a template payload
             tpl_meta = adv_ev.metadata if adv_ev else {}
-            tpl_cvss_vector   = tpl_meta.get("tpl_cvss_metrics")
-            tpl_cvss_score    = tpl_meta.get("tpl_cvss_score")
-            tpl_remediation   = tpl_meta.get("tpl_remediation")
-            tpl_owasp_llm     = tpl_meta.get("tpl_owasp_llm")
-            tpl_cwe           = tpl_meta.get("tpl_cwe")
-            tpl_references    = tpl_meta.get("tpl_reference") or []
-            tpl_name          = tpl_meta.get("custom_payload_name")
+            tpl_cvss_vector = tpl_meta.get("tpl_cvss_metrics")
+            tpl_cvss_score = tpl_meta.get("tpl_cvss_score")
+            tpl_remediation = tpl_meta.get("tpl_remediation")
+            tpl_owasp_llm = tpl_meta.get("tpl_owasp_llm")
+            tpl_cwe = tpl_meta.get("tpl_cwe")
+            tpl_references = tpl_meta.get("tpl_reference") or []
+            tpl_name = tpl_meta.get("custom_payload_name")
 
             # CVSS — prefer template values (pre-validated) over auto-computed
             if tpl_cvss_vector and tpl_cvss_score is not None:
                 cvss_vector = tpl_cvss_vector
-                cvss_score  = float(tpl_cvss_score)
+                cvss_score = float(tpl_cvss_score)
             else:
                 cvss_vector, cvss_score = cvss_for(attack_class, list(p.edge_types))
 
@@ -524,7 +827,8 @@ class PwnGraph:
                 evidence["trials"] = asr_entry.get("trials")
                 evidence["successes"] = asr_entry.get("successes")
                 evidence["asr_ci95"] = (
-                    asr_entry.get("wilson_low"), asr_entry.get("wilson_high"),
+                    asr_entry.get("wilson_low"),
+                    asr_entry.get("wilson_high"),
                 )
 
             findings.append(
@@ -644,3 +948,172 @@ class PwnGraph:
                     payload=payload,
                 )
             )
+
+    def _run_nexus_loop(
+        self,
+        attack_list: list[str],
+        tools: list[Any],
+        oracle: BehavioralOracle,
+        action_sinks: set[str],
+        budget: int,
+        level: int,
+        exhaustive: bool,
+        max_calls: int | None,
+        calls_made: int,
+        prog: Any,
+        task: Any,
+    ) -> int:
+        """Drives the scan: one adaptive probe at a time.
+
+        NEXUS decides a strategy (``Nexus.decide_next``), the Fuzzer generates
+        a payload for it, ``_run_one`` executes it, the shared ``oracle``
+        scores it immediately, and NEXUS folds the result into its
+        AttackState (``Nexus.observe``) before deciding the next probe. Each
+        run's events are ingested into the graph builder incrementally here,
+        one record at a time — ``scan()`` does not re-ingest them afterward.
+
+        Returns the updated ``calls_made`` counter.
+        """
+        nexus = Nexus(
+            attack_classes=attack_list,
+            tools=tools,
+            budget=budget,
+            level=level,
+            target_name=self.connector.target_name(),
+            exhaustive=exhaustive,
+            target_profile=self.target_profile,
+        )
+        log.info(
+            "NEXUS: level=%d budget=%d exhaustive=%s classes=%s",
+            level,
+            budget,
+            exhaustive,
+            attack_list,
+        )
+
+        decision = None
+        consecutive_blocked = 0
+        while not nexus.should_stop():
+            if max_calls and calls_made >= max_calls:
+                log.warning("Cost guard: max_calls=%d reached, stopping NEXUS early.", max_calls)
+                break
+            decision = nexus.decide_next()
+            if decision.is_stop:
+                break
+
+            # Always hand every generator the *full* tool list — filtering it
+            # down to just the hinted tool broke multi-hop generators like
+            # tool_poisoning/indirect_injection, whose delivery-tool
+            # selection (which data-sink tool to poison, so the agent
+            # actually calls and reads it) is a different question from
+            # which tool the payload's *content* should steer toward. Every
+            # generator now accepts a context["desired_action_tool"] hint
+            # (see pwngraph.fuzzer.delivery.prefer_tool/desired_action_tag)
+            # and biases its own existing tool-selection logic toward it
+            # when it's a sensible candidate — a pure bias, never a hard
+            # restriction, so this can't produce a nonsensical payload the
+            # way pre-filtering the tool list could.
+            context: dict[str, Any] = {}
+            if decision.tools_hint:
+                context["desired_action_tool"] = decision.tools_hint[0]
+            # PyRIT-style adaptation: hand the generator *why* recent attempts
+            # against this same class failed (the Oracle's own signals,
+            # already recorded on each Observation), so a regenerated
+            # attempt is a genuine adaptation instead of a blind re-roll. See
+            # pwngraph.fuzzer.llm_generator's use of context["recent_signals"].
+            recent = [
+                s
+                for obs in nexus.state.tail_observations(decision.attack_class)[-2:]
+                for s in obs.signals
+            ]
+            if recent:
+                context["recent_signals"] = recent
+            try:
+                payload = self.fuzzer.next_payload(
+                    decision.attack_class,
+                    tools=tools,
+                    context=context or None,
+                    target_profile=self.target_profile,
+                )
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 — a flaky generation call shouldn't kill the run
+                log.warning("Payload generation failed (class=%s): %s", decision.attack_class, exc)
+                continue
+
+            # Safety boundary: NEXUS decides its own next move autonomously,
+            # with no human reviewing each step — see pwngraph.nexus.safety
+            # for what this guard screens for. A blocked probe isn't
+            # delivered and doesn't consume budget; a small consecutive-block
+            # cap prevents a persistently-unsafe decision from spinning
+            # forever.
+            is_safe, unsafe_reason = screen_payload(payload)
+            if not is_safe:
+                consecutive_blocked += 1
+                log.warning(
+                    "NEXUS safety guard blocked a probe (class=%s): %s",
+                    decision.attack_class,
+                    unsafe_reason,
+                )
+                if consecutive_blocked >= 3:
+                    log.warning("3 consecutive unsafe probes blocked — stopping NEXUS early.")
+                    nexus.state.status = NexusStatus.STOPPED_NO_PROGRESS
+                    break
+                continue
+            consecutive_blocked = 0
+
+            self._run_one(
+                payload.delivery_input,
+                adversarial=True,
+                payload_id=payload.payload_id,
+                payload=payload,
+            )
+            calls_made += 1
+            record = self._run_records[-1]
+            verdict = oracle.evaluate_run(record)
+            obs = nexus.observe(
+                record, verdict, action=decision.action, rationale=decision.rationale
+            )
+
+            # Carrier-delivery feedback: a payload that wrote content to a
+            # carrier location and named a target tool only actually
+            # delivers if that tool's own TOOL_RESULT echoes the canary
+            # back. A tool that gets called but never does (e.g. a closed
+            # lookup keyed by a small fixed set of names, which can't
+            # resolve a freshly generated carrier path) is structurally
+            # incapable of delivering here — teach the generator so it stops
+            # re-rolling that tool for the rest of this scan's budget.
+            if payload.metadata.get("carrier_location") and payload.target_tool:
+                carrier_results = [
+                    e
+                    for e in record.events
+                    if e.node_type is NodeType.TOOL_RESULT and e.name == payload.target_tool
+                ]
+                if carrier_results:
+                    delivered = any(payload.canary in (e.content or "") for e in carrier_results)
+                    self.fuzzer.record_delivery_outcome(payload.target_tool, delivered)
+
+            self.graph_builder.ingest(record.events, action_sinks=action_sinks)
+
+            log.debug(
+                "NEXUS #%d [%s -> %s] success=%s confidence=%s :: %s",
+                nexus.state.iteration,
+                decision.action.value,
+                decision.attack_class,
+                obs.success,
+                obs.confidence,
+                decision.rationale,
+            )
+            if prog and task is not None:
+                prog.advance(task)
+
+        self.nexus_state = nexus.state
+        log.info(
+            "NEXUS finished: status=%s iterations=%d/%d successful=%s discovered_tools=%d",
+            nexus.state.status.value,
+            nexus.state.iteration,
+            nexus.state.budget,
+            nexus.state.successful_techniques,
+            len(nexus.state.discovered_capabilities),
+        )
+        return calls_made

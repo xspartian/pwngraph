@@ -72,12 +72,12 @@ PARTIAL: dict[str, str] = {
 
 # Primary + applicable IDs each attack class demonstrates.
 CLASS_TO_OWASP: dict[str, list[str]] = {
-    "indirect_injection":   ["LLM01", "LLM08"],
-    "tool_poisoning":       ["LLM01", "LLM05"],
-    "prompt_exfiltration":  ["LLM07", "LLM02"],
-    "shell_injection":      ["LLM06", "LLM05"],
-    "file_read_injection":  ["LLM02", "LLM06"],
-    "memory_poisoning":     ["LLM01", "LLM08"],
+    "indirect_injection": ["LLM01", "LLM08"],
+    "tool_poisoning": ["LLM01", "LLM05"],
+    "prompt_exfiltration": ["LLM07", "LLM02"],
+    "shell_injection": ["LLM06", "LLM05"],
+    "file_read_injection": ["LLM02", "LLM06"],
+    "memory_poisoning": ["LLM01", "LLM08"],
 }
 
 
@@ -92,9 +92,11 @@ def owasp_for_finding(attack_class: str, edge_types: list[EdgeType]) -> list[str
     """
     ids = list(CLASS_TO_OWASP.get(attack_class, ["LLM01"]))
 
-    if any(e in (EdgeType.DATA_EXFIL, EdgeType.TOOL_MANIPULATION) for e in edge_types):
-        if "LLM06" not in ids:
-            ids.append("LLM06")
+    if (
+        any(e in (EdgeType.DATA_EXFIL, EdgeType.TOOL_MANIPULATION) for e in edge_types)
+        and "LLM06" not in ids
+    ):
+        ids.append("LLM06")
     if EdgeType.DATA_EXFIL in edge_types and "LLM02" not in ids:
         ids.append("LLM02")
 
@@ -111,6 +113,7 @@ def label(owasp_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Coverage matrix — the CFP artifact
 # ---------------------------------------------------------------------------
+
 
 def coverage_matrix(findings: list) -> list[dict]:
     """Build an honest coverage row for every one of the 10 categories.
@@ -141,11 +144,13 @@ def coverage_matrix(findings: list) -> list[dict]:
             status, detail = "tested", "attack class exercised this category; no finding this run"
         else:
             status, detail = "out-of-scope", "no dynamic test maps to this category"
-        rows.append({
-            "id": oid,
-            "name": name,
-            "status": status,
-            "detail": detail,
-            "count": hit_counts.get(oid, 0),
-        })
+        rows.append(
+            {
+                "id": oid,
+                "name": name,
+                "status": status,
+                "detail": detail,
+                "count": hit_counts.get(oid, 0),
+            }
+        )
     return rows

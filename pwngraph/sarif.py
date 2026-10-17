@@ -24,18 +24,18 @@ _SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
 
 _LEVEL: dict[str, str] = {
     Severity.CRITICAL.value: "error",
-    Severity.HIGH.value:     "error",
-    Severity.MEDIUM.value:   "warning",
-    Severity.LOW.value:      "note",
-    Severity.INFO.value:     "note",
+    Severity.HIGH.value: "error",
+    Severity.MEDIUM.value: "warning",
+    Severity.LOW.value: "note",
+    Severity.INFO.value: "note",
 }
 
 _RANK: dict[str, float] = {
     Severity.CRITICAL.value: 100.0,
-    Severity.HIGH.value:     75.0,
-    Severity.MEDIUM.value:   50.0,
-    Severity.LOW.value:      25.0,
-    Severity.INFO.value:     0.0,
+    Severity.HIGH.value: 75.0,
+    Severity.MEDIUM.value: 50.0,
+    Severity.LOW.value: 25.0,
+    Severity.INFO.value: 0.0,
 }
 
 
@@ -90,7 +90,7 @@ def _result(finding: Finding) -> dict[str, Any]:
 def to_sarif(
     findings: list[Finding],
     tool_name: str = "PwnGraph",
-    tool_version: str = "0.1.0",
+    tool_version: str = "1.0.0",
 ) -> dict[str, Any]:
     """Convert a list of ``Finding`` objects to a SARIF 2.1.0 dict."""
     rules = [_rule(f) for f in findings]

@@ -14,10 +14,41 @@ source .venv/bin/activate
 pip install -e ".[all]"
 ```
 
-## Run the test suite
+PwnGraph stores every attack graph in Neo4j — there is no in-process
+fallback, and the backend contract suite (`tests/test_backend_contract.py`)
+needs a reachable instance to run instead of skipping. Bring up the bundled
+dev instance before testing:
 
 ```bash
-# Unit tests — no langchain required
+docker compose up -d
+pwngraph doctor   # confirms Neo4j is actually reachable, not just installed
+```
+
+Working on the live viewer (`pwngraph serve`, `pwngraph/api/`, or
+`frontend/`)? Install the `serve` extra and see `frontend/README.md` for the
+frontend dev workflow (`npm install && npm run dev`, proxied to `pwngraph
+serve`'s API):
+
+```bash
+pip install -e ".[all]"   # already includes the `serve` extra
+cd frontend && npm install && npm run dev
+```
+
+Pointing at a different instance for tests: set `NEO4J_TEST_URI` /
+`NEO4J_TEST_USER` / `NEO4J_TEST_PASSWORD` (defaults match
+`docker-compose.yml`: `bolt://localhost:7687` / `neo4j` / `pwngraph-dev`).
+
+## Run the test suite
+
+No `OPENAI_API_KEY` needed to run the suite: every fuzzer/generator test
+injects a fake `LLMClient` (`tests/_fake_llm_client.py`) instead of hitting
+the real API — see `pwngraph/fuzzer/llm_generator.py`'s injectable-client
+design.
+
+```bash
+# Unit tests — no langchain required. Still needs Neo4j reachable: the
+# backend contract suite isn't marked `integration`, since it's exercising
+# the storage layer directly, not a full agent scan.
 pytest -m "not integration"
 
 # Full suite including the lab agent
@@ -27,6 +58,10 @@ pytest
 pytest --cov=pwngraph --cov-report=html
 open htmlcov/index.html
 ```
+
+If `pytest` behaves differently than expected, confirm it's actually running
+under this venv's interpreter and not a system-wide install shadowing it on
+`PATH` (`which pytest`, or just always invoke `python -m pytest`).
 
 ## Lint & type check
 
@@ -42,24 +77,33 @@ CI runs all three on every PR.
 
 ### High priority
 
-* **More attack-class generators**. v1 ships two; the architecture supports
-  many more. Each new class is one file under `pwngraph/fuzzer/` plus a
-  route in `fuzzer.py:next_payload`. See `docs/THREAT_MODEL.md` for the v2
-  candidates.
-* **CrewAI and AutoGen connectors**. Mirror `pwngraph/connector/langchain.py`
-  and add a callback bridge equivalent to `langchain_handler.py`.
+* **AutoGen and MCP support**. `pwngraph/connector/base.py`'s `Connector` ABC
+  (see `LangChainConnector`/`LangGraphConnector` for the shape) is the
+  pattern to follow for a new framework connector — a duck-typed adapter,
+  executor-level tracing if the framework has no callback API. MCP is
+  broader: tool-manifest scanning, description poisoning, and tool shadowing
+  don't map cleanly onto the existing `Connector` shape and need their own
+  design pass first.
+* **More attack classes**. v1 ships six; the architecture supports many
+  more. Every attack class's content is LLM-generated at scan time
+  (`pwngraph/fuzzer/llm_generator.py`) — there are no per-class template
+  files to add. A new class is a new entry in that module's
+  `_CLASS_PROFILES` (technique description, delivery mode, tool-bias rule)
+  plus a new `AttackClass` enum member in `pwngraph/fuzzer/payload.py`.
 * **Better tool-argument classification heuristics**. The current `ToolSpec`
   `is_data_sink` / `is_action_sink` predicates are coarse. PRs improving
   classification with embeddings or schema analysis are welcome.
+* **`pwngraph query` library growth**. `pwngraph/queries.py` is a small,
+  curated registry today (`pwngraph query` lists what exists) — more named
+  queries are welcome as long as each one is genuinely backend-portable (see
+  the module docstring) and comes with tests against `FakeGraphBackend`.
 
 ### Medium priority
 
 * **LLM-as-judge confirmation**. Optional second-pass model that grades
   whether a path is actually exploitable, to reduce false positives.
-* **Result-set comparison**. Cross-run delta view to highlight regressions
-  after a defense ships.
-* **More example targets**. CrewAI/LangGraph examples to exercise the
-  multi-agent shape.
+* **More example targets**. LangGraph examples to exercise multi-node/
+  multi-step graph shapes.
 
 ### Always welcome
 

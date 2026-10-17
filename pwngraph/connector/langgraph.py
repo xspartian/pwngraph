@@ -27,8 +27,16 @@ from pwngraph.util import flatten_text
 log = logging.getLogger(__name__)
 
 _TRANSIENT_MARKERS = (
-    "429", "resource_exhausted", "rate limit", "rate_limit",
-    "503", "500", "overloaded", "temporarily", "unavailable", "timeout",
+    "429",
+    "resource_exhausted",
+    "rate limit",
+    "rate_limit",
+    "503",
+    "500",
+    "overloaded",
+    "temporarily",
+    "unavailable",
+    "timeout",
 )
 
 
@@ -36,9 +44,7 @@ def _is_langgraph(obj: Any) -> bool:
     cls_name = type(obj).__name__
     if "CompiledGraph" in cls_name or "CompiledStateGraph" in cls_name:
         return True
-    if hasattr(obj, "get_graph") and hasattr(obj, "stream"):
-        return True
-    return False
+    return hasattr(obj, "get_graph") and hasattr(obj, "stream")
 
 
 class LangGraphConnector(Connector):
@@ -72,9 +78,15 @@ class LangGraphConnector(Connector):
         return self._tools_cache
 
     def invoke(self, user_input: str, tracer: Any, payload: Any | None = None) -> str:
-        # Tool poisoning: patch before invoke, restore after.
+        # Tool poisoning: patch before invoke, restore after. Gated on the
+        # mechanism (poisoned_output metadata present), not a specific
+        # attack_class — see the identical comment in connector/langchain.py.
         restores: list[tuple[Any, str, Any]] = []
-        if payload is not None and getattr(payload, "attack_class", None) == "tool_poisoning":
+        if (
+            payload is not None
+            and getattr(payload, "metadata", None)
+            and payload.metadata.get("poisoned_output")
+        ):
             restores = self._install_poisoned_tools(payload)
 
         try:
@@ -94,6 +106,7 @@ class LangGraphConnector(Connector):
 
     def _invoke_with_retry(self, user_input: str, callbacks: list[Any]) -> Any:
         import time
+
         try:
             from langchain_core.messages import HumanMessage
         except ImportError as e:
@@ -110,10 +123,13 @@ class LangGraphConnector(Connector):
                 msg = str(exc).lower()
                 transient = any(m in msg for m in _TRANSIENT_MARKERS)
                 if transient and attempt < self._retries:
-                    wait = delay * (2 ** attempt)
+                    wait = delay * (2**attempt)
                     log.warning(
                         "Transient LangGraph error (%s); retry %d/%d in %.0fs",
-                        exc.__class__.__name__, attempt + 1, self._retries, wait,
+                        exc.__class__.__name__,
+                        attempt + 1,
+                        self._retries,
+                        wait,
                     )
                     time.sleep(wait)
                     continue
@@ -133,9 +149,12 @@ class LangGraphConnector(Connector):
             for msg in reversed(msgs):
                 if AIMessage and isinstance(msg, AIMessage):
                     return flatten_text(getattr(msg, "content", str(msg)))
-                if hasattr(msg, "content") and hasattr(msg, "type"):
-                    if getattr(msg, "type", "") in ("ai", "AIMessage"):
-                        return flatten_text(msg.content)
+                if (
+                    hasattr(msg, "content")
+                    and hasattr(msg, "type")
+                    and getattr(msg, "type", "") in ("ai", "AIMessage")
+                ):
+                    return flatten_text(msg.content)
             # Fallback: last message
             if msgs:
                 return flatten_text(getattr(msgs[-1], "content", str(msgs[-1])))
@@ -171,17 +190,20 @@ class LangGraphConnector(Connector):
                         continue
                     seen.add(name)
                     desc = getattr(t, "description", "") or ""
-                    specs.append(ToolSpec(
-                        name=name,
-                        description=desc,
-                        tool_schema=_tool_schema(t),
-                        tags=_infer_tags(name, desc),
-                    ))
+                    specs.append(
+                        ToolSpec(
+                            name=name,
+                            description=desc,
+                            tool_schema=_tool_schema(t),
+                            tags=_infer_tags(name, desc),
+                        )
+                    )
 
         # Fallback: agent node may have llm.bind_tools() kwargs
         if not specs:
             try:
                 from pwngraph.connector.langchain import LangChainConnector
+
                 dummy = LangChainConnector.__new__(LangChainConnector)
                 dummy.agent = self.graph
                 dummy._warned_no_tools = True
@@ -207,8 +229,12 @@ class LangGraphConnector(Connector):
         for spec_tool in self._all_tools():
             if getattr(spec_tool, "name", None) != target_name:
                 continue
-            for attr, fn in (("_run", _sync), ("func", _sync),
-                             ("_arun", _async), ("coroutine", _async)):
+            for attr, fn in (
+                ("_run", _sync),
+                ("func", _sync),
+                ("_arun", _async),
+                ("coroutine", _async),
+            ):
                 if getattr(spec_tool, attr, None) is not None:
                     restores.append((spec_tool, attr, getattr(spec_tool, attr)))
                     setattr(spec_tool, attr, fn)

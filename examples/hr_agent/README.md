@@ -50,12 +50,12 @@ search_job_postings  →  [poisoned result + hidden instruction]  →  send_hr_e
 ```bash
 # Full scan, all 6 attack classes:
 pwngraph scan --target examples/hr_agent/agent.py:build_agent \
-              --attacks all --iterations 25 --seed 42 --out ./hr_out
+              --attacks all --budget 25 --seed 42 --authorized --out ./hr_out
 
 # Or target it with a custom payload from the pwngraph-templates:
 pwngraph scan --target examples/hr_agent/agent.py:build_agent \
               --payload pwngraph-templates/attacks/tool_poisoning/email_exfil.yaml \
-              --payload-only --out ./hr_out
+              --payload-only --authorized --out ./hr_out
 ```
 
 PwnGraph discovers the chain automatically, confirms it via its canary oracle,

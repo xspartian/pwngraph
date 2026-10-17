@@ -28,54 +28,57 @@ from pwngraph.types import EdgeType, Severity
 
 _VECTORS: dict[tuple[str, str], tuple[str, float]] = {
     # --- indirect_injection ---
-    ("indirect_injection", "data_exfil"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:N", 9.3),
-    ("indirect_injection", "tool_manipulation"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:H/A:N", 8.2),
-    ("indirect_injection", "context_poisoning"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N", 5.4),
-    ("indirect_injection", "direct_injection"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N", 5.4),
-
+    ("indirect_injection", "data_exfil"): ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:N", 9.3),
+    ("indirect_injection", "tool_manipulation"): (
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:H/A:N",
+        8.2,
+    ),
+    ("indirect_injection", "context_poisoning"): (
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N",
+        5.4,
+    ),
+    ("indirect_injection", "direct_injection"): (
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N",
+        5.4,
+    ),
     # --- tool_poisoning ---
-    ("tool_poisoning", "data_exfil"):
-        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:N", 9.0),
-    ("tool_poisoning", "tool_manipulation"):
-        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:H/A:N", 8.0),
-    ("tool_poisoning", "context_poisoning"):
-        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N", 5.9),
-
+    ("tool_poisoning", "data_exfil"): ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:N", 9.0),
+    ("tool_poisoning", "tool_manipulation"): ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:H/A:N", 8.0),
+    ("tool_poisoning", "context_poisoning"): ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N", 5.9),
     # --- prompt_exfiltration ---
-    ("prompt_exfiltration", "data_exfil"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N", 7.4),
-    ("prompt_exfiltration", "context_poisoning"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N", 6.5),
-    ("prompt_exfiltration", "direct_injection"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N", 6.5),
-
+    ("prompt_exfiltration", "data_exfil"): ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N", 7.4),
+    ("prompt_exfiltration", "context_poisoning"): (
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+        6.5,
+    ),
+    ("prompt_exfiltration", "direct_injection"): (
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+        6.5,
+    ),
     # --- shell_injection ---
-    ("shell_injection", "tool_manipulation"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H", 9.6),
-    ("shell_injection", "data_exfil"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H", 9.6),
-    ("shell_injection", "context_poisoning"):
-        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:H/A:H", 8.3),
-
+    ("shell_injection", "tool_manipulation"): ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H", 9.6),
+    ("shell_injection", "data_exfil"): ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H", 9.6),
+    ("shell_injection", "context_poisoning"): ("CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:H/A:H", 8.3),
     # --- file_read_injection ---
-    ("file_read_injection", "data_exfil"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N", 7.4),
-    ("file_read_injection", "tool_manipulation"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N", 7.4),
-    ("file_read_injection", "context_poisoning"):
-        ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N", 6.5),
-
+    ("file_read_injection", "data_exfil"): ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N", 7.4),
+    ("file_read_injection", "tool_manipulation"): (
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:N/A:N",
+        7.4,
+    ),
+    ("file_read_injection", "context_poisoning"): (
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+        6.5,
+    ),
     # --- memory_poisoning ---
-    ("memory_poisoning", "context_poisoning"):
-        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:H/A:N", 8.0),
-    ("memory_poisoning", "tool_manipulation"):
-        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:H/A:N", 8.0),
-    ("memory_poisoning", "direct_injection"):
-        ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N", 4.8),
+    ("memory_poisoning", "context_poisoning"): (
+        "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:H/A:N",
+        8.0,
+    ),
+    ("memory_poisoning", "tool_manipulation"): (
+        "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:H/A:N",
+        8.0,
+    ),
+    ("memory_poisoning", "direct_injection"): ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N", 4.8),
 }
 
 _EDGE_PRIORITY = [
