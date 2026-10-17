@@ -379,7 +379,7 @@ class Nexus:
                         from_tool=last.target_tool,
                         prefer_untouched=set(self._never_touched_tools()),
                     )
-                    target_action = (ranked or [None])[0]
+                    target_action = ranked[0] if ranked else None
                     candidates.append(
                         NexusDecision(
                             action=NexusAction.FOLLOW_PATH,
@@ -563,6 +563,7 @@ class Nexus:
         """
         never_touched_tools = self._never_touched_tools()
         never_touched_classes = self._never_touched_classes()
+        tool_name: str | None
 
         if never_touched_tools and never_touched_classes:
             tool_name = never_touched_tools[0]
@@ -573,7 +574,7 @@ class Nexus:
             preferred = [
                 c for c in self.state.successful_techniques if c in self.state.attack_classes
             ]
-            attack_class = preferred[0] if preferred else self._next_unexplored_class()
+            attack_class = preferred[0] if preferred else self._next_unexplored_class() or ""
             reason = f"every class has an attempt — '{tool_name}' is still untouched, trying '{attack_class}'"
         else:
             attack_class = never_touched_classes[0]

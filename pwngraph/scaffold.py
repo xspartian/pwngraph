@@ -244,10 +244,15 @@ def analyze_plain_agent(path: Path) -> PlainAgentAnalysis:
 
     # --- entry point: score by structure, never by name -------------------------
     candidates: list[tuple[int, str]] = []
-    for name, node in functions.items():
-        if name in tool_fn_names or name in _SKIP_FUNCTION_NAMES or name.startswith("_"):
+    for name, fn in functions.items():
+        if (
+            not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            or name in tool_fn_names
+            or name in _SKIP_FUNCTION_NAMES
+            or name.startswith("_")
+        ):
             continue
-        args = node.args
+        args = fn.args
         required = len(args.args) - len(args.defaults)
         if required > 1:
             continue
@@ -255,7 +260,7 @@ def analyze_plain_agent(path: Path) -> PlainAgentAnalysis:
         score = 0
         if dispatch_fn == name:
             score += 6  # *is* the dispatcher
-        if tools_dict_var and tools_dict_var in _referenced_names(node):
+        if tools_dict_var and tools_dict_var in _referenced_names(fn):
             score += 6  # references the dispatch dict
         score += min(len(call_graph.get(name, set()) & tool_fn_names), 4)  # fan-out to tools
         if _called_from_main(tree, name):

@@ -140,6 +140,8 @@ def _promote_observed(
     }
     called_names.discard(None)
     for name in called_names:
+        if name is None:
+            continue
         _touch(graph, target_id, name, EvidenceState.OBSERVED, source_if_new="runtime")
 
 

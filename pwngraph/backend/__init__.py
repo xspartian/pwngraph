@@ -41,5 +41,5 @@ def make_backend(kind: str = "neo4j", **kwargs: object) -> GraphBackend:
         kwargs.setdefault("uri", os.environ.get("PWNGRAPH_NEO4J_URI", "bolt://localhost:7687"))
         kwargs.setdefault("user", os.environ.get("PWNGRAPH_NEO4J_USER", "neo4j"))
         kwargs.setdefault("password", os.environ.get("PWNGRAPH_NEO4J_PASSWORD", "pwngraph-dev"))
-        return Neo4jBackend(**kwargs)
+        return Neo4jBackend(**kwargs)  # type: ignore[arg-type]
     raise ValueError(f"Unknown graph backend {kind!r}. Available: {', '.join(_AVAILABLE)}.")

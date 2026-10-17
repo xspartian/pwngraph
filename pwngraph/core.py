@@ -840,7 +840,7 @@ class PwnGraph:
                     target_system=target,
                     attack_class=attack_class,
                     owasp=owasp_ids,
-                    payload_id=payload_id,
+                    payload_id=payload_id or "unknown",
                     summary=p.description or p.events[-1].content,
                     steps_to_reproduce=self._steps_for(p),
                     impact=self._impact_for(p),
@@ -998,7 +998,7 @@ class PwnGraph:
                 log.warning("Cost guard: max_calls=%d reached, stopping NEXUS early.", max_calls)
                 break
             decision = nexus.decide_next()
-            if decision.is_stop:
+            if decision.is_stop or decision.attack_class is None:
                 break
 
             # Always hand every generator the *full* tool list — filtering it

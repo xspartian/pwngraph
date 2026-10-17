@@ -711,7 +711,7 @@ def diff(
             f"[red]{len(new_at_or_above)} new path(s) at or above "
             f"--fail-on-severity={fail_on_severity}[/red]"
         )
-    if grade_regressed:
+    if grade_regressed and before_grade is not None:
         console.print(
             f"[red]Risk grade regressed: {before_grade['grade']} "
             f"(score {before_grade['score']}) -> {after_grade['grade']} "
@@ -1242,7 +1242,7 @@ def init_cmd(path: Path, out: Path, target: Path | None) -> None:
         console.print("[green]Mode     :[/green] Static analysis (deterministic fallback, no LLM)")
         generate_plain_adapter(
             module=agent_file.stem,
-            entry_function=plain_analysis.entry_function,
+            entry_function=plain_analysis.entry_function or "",
             tools=plain_analysis.tools,
             tools_dict_name=plain_analysis.tools_dict_name,
             output_path=out,
@@ -1940,7 +1940,7 @@ def _llm_generate_adapter(source_path: Path, out: Path, analysis: Any = None) ->
         f"Generate adapter.py for this agent:\n\n```python\n{source}\n```\n\n" + "\n".join(hints)
     )
 
-    messages: list[dict[str, str]] = [
+    messages: list[Any] = [
         {"role": "system", "content": _ADAPTER_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
@@ -1958,7 +1958,7 @@ def _llm_generate_adapter(source_path: Path, out: Path, analysis: Any = None) ->
                 temperature=0,
             )
 
-        code = resp.choices[0].message.content.strip()
+        code = (resp.choices[0].message.content or "").strip()
         # Strip markdown fences if the model added them despite the instruction
         if code.startswith("```"):
             lines = code.splitlines()
@@ -1967,6 +1967,7 @@ def _llm_generate_adapter(source_path: Path, out: Path, analysis: Any = None) ->
             code = "\n".join(lines[start:end])
 
         static_error = _static_check_adapter_code(code)
+        error_for_retry: str | None
         if static_error is not None:
             console.print(f"[yellow]⚠ LLM output failed a static check: {static_error}[/yellow]")
             error_for_retry = static_error

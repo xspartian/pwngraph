@@ -320,7 +320,7 @@ def _findings_from_sinks(
         label = " → ".join(n for n in tool_names if n) or attrs.get("label") or "path"
         signature = "|".join(sig_parts)
 
-        row = {
+        row: dict[str, Any] = {
             "severity": attrs.get("outcome_severity") or "medium",
             "confidence": attrs.get("confidence") or "medium",
             "label": label,
