@@ -12,7 +12,6 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from typing import Any
 import click
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -126,7 +126,11 @@ def cli() -> None:
     default=25,
     show_default=True,
     type=int,
-    help="Interaction budget: the max number of adaptive probes NEXUS may run.",
+    help=(
+        "Adaptive probes to send. The scan sends exactly this many (on top of the "
+        "baseline and recon runs) unless --early-stop, --max-calls, or a blocked/failed "
+        "payload stops it sooner — the summary says which."
+    ),
 )
 @click.option(
     "--nexus-level",
@@ -140,15 +144,14 @@ def cli() -> None:
     ),
 )
 @click.option(
-    "--exhaustive",
-    is_flag=True,
-    default=False,
+    "--exhaustive/--early-stop",
+    default=True,
+    show_default=True,
     help=(
-        "Disable the confidence-based early stop: by default NEXUS stops once every "
-        "class/tool has at least one attempt and confidence is high, which can leave a "
-        "class that failed its one probe never retried. With this on, NEXUS only stops "
-        "on budget exhaustion or a genuine dead end — every class gets a real, "
-        "multi-attempt shot."
+        "--exhaustive (default) spends the whole --budget, giving every class a real, "
+        "multi-attempt shot. --early-stop lets NEXUS stop once every class and tool has "
+        "one attempt and confidence is high — cheaper, but a class that failed its one "
+        "probe is reported untested beyond that single try."
     ),
 )
 @click.option(
@@ -371,7 +374,7 @@ def scan(
     console.print(f"Output  : [cyan]{out}[/cyan]")
     console.print(
         f"NEXUS   : [magenta]level={nexus_level}[/magenta]  budget={budget} adaptive probes"
-        + ("  [yellow]exhaustive[/yellow]" if exhaustive else "")
+        + ("" if exhaustive else "  [yellow]early-stop[/yellow]")
     )
 
     agent = _load_agent(target)
@@ -434,19 +437,24 @@ def scan(
         console.print(msg)
 
     effective_attacks = "none" if (payload_only and custom_payloads) else attacks
-    paths = pg.scan(
-        attacks=effective_attacks,
-        budget=budget,
-        baseline_runs=baseline_runs,
-        payload_trials=payload_trials,
-        max_calls=max_calls,
-        progress=not no_progress,
-        custom_payloads=custom_payloads,
-        recon_budget=recon_budget,
-        nexus_level=nexus_level,
-        nexus_exhaustive=exhaustive,
-        authorized=authorized,
-    )
+    from pwngraph.core import TargetUnavailableError
+
+    try:
+        paths = pg.scan(
+            attacks=effective_attacks,
+            budget=budget,
+            baseline_runs=baseline_runs,
+            payload_trials=payload_trials,
+            max_calls=max_calls,
+            progress=not no_progress,
+            custom_payloads=custom_payloads,
+            recon_budget=recon_budget,
+            nexus_level=nexus_level,
+            nexus_exhaustive=exhaustive,
+            authorized=authorized,
+        )
+    except TargetUnavailableError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     pg.run_static_analysis(target)
 
@@ -472,9 +480,21 @@ def scan(
         ns = pg.nexus_state
         nexus_table = Table(title="NEXUS", show_header=False)
         nexus_table.add_row("status", ns.status.value)
-        nexus_table.add_row("iterations", f"{ns.iteration}/{ns.budget}")
-        nexus_table.add_row("successful_techniques", ", ".join(ns.successful_techniques) or "none")
-        nexus_table.add_row("failed_techniques", ", ".join(ns.failed_techniques) or "none")
+        sent = f"{ns.iteration}/{ns.budget}"
+        if ns.iteration < ns.budget:
+            sent += f"  [yellow](stopped early: {pg.probe_stop_reason or ns.status.value})[/yellow]"
+        nexus_table.add_row("probes sent", sent)
+        tries = ns.attempts_per_class()
+        nexus_table.add_row(
+            "successful_techniques",
+            ", ".join(f"{c} ({tries.get(c, 0)} tries)" for c in ns.successful_techniques) or "none",
+        )
+        # "Failed" overclaims after a try or two — an LLM attack that missed
+        # once can land on the next attempt. Say what was actually observed.
+        nexus_table.add_row(
+            "not_reproduced",
+            ", ".join(f"{c} ({tries.get(c, 0)} tries)" for c in ns.failed_techniques) or "none",
+        )
         nexus_table.add_row("discovered_tools", str(len(ns.discovered_capabilities)))
         nexus_table.add_row("confidence", f"{ns.confidence:.2f}")
         console.print(nexus_table)
@@ -560,7 +580,7 @@ def scan(
 @click.option("--budget", default=25, show_default=True, type=int)
 @click.option("--baseline-runs", default=3, show_default=True, type=int)
 @click.option("--nexus-level", default=1, show_default=True, type=click.IntRange(1, 5))
-@click.option("--exhaustive", is_flag=True, default=False)
+@click.option("--exhaustive/--early-stop", default=True, show_default=True)
 @click.option(
     "--authorized",
     is_flag=True,
@@ -647,16 +667,21 @@ def diff(
     agent = _load_agent(target)
     graph_backend = _make_graph_backend(neo4j_uri, neo4j_user, neo4j_password)
     pg = PwnGraph(agent=agent, seed=seed, graph_backend=graph_backend)
-    after = pg.scan(
-        attacks=attacks,
-        budget=budget,
-        baseline_runs=baseline_runs,
-        nexus_level=nexus_level,
-        nexus_exhaustive=exhaustive,
-        max_calls=max_calls,
-        progress=not no_progress,
-        authorized=authorized,
-    )
+    from pwngraph.core import TargetUnavailableError
+
+    try:
+        after = pg.scan(
+            attacks=attacks,
+            budget=budget,
+            baseline_runs=baseline_runs,
+            nexus_level=nexus_level,
+            nexus_exhaustive=exhaustive,
+            max_calls=max_calls,
+            progress=not no_progress,
+            authorized=authorized,
+        )
+    except TargetUnavailableError as exc:
+        raise click.ClickException(str(exc)) from exc
     after_grade = pg.risk_grade()
 
     result = diff_paths(before, after)
@@ -967,8 +992,8 @@ def serve(
     No auth is required by default — reasonable for a loopback-only server,
     but this API reads back everything a scan captured. Pass --token (or set
     PWNGRAPH_API_TOKEN) whenever --host makes this reachable from anywhere
-    else; the browser can use it as either an Authorization header or a
-    ?token= query parameter.
+    else, and open the viewer once as http://HOST:PORT/?token=TOKEN — that
+    sets a cookie the viewer's own API calls use.
     """
     try:
         import uvicorn
@@ -997,7 +1022,10 @@ def serve(
 
     is_loopback = host in ("127.0.0.1", "localhost", "::1")
     if token:
-        console.print("[dim]API token required on every /api/* request.[/dim]")
+        console.print(
+            "[dim]API token required on every /api/* request — open the viewer "
+            f"once as http://{host}:{port}/?token=<token>[/dim]"
+        )
     elif not is_loopback:
         console.print(
             f"[bold red]⚠  Binding to {host} with no --token set.[/bold red] "
@@ -1129,152 +1157,219 @@ def doctor() -> None:
     "--target",
     default=None,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Agent file to scan directly, bypassing search. Overrides PATH.",
+    help="Hint: the file that defines the agent. The AI starts its exploration there.",
 )
-def init_cmd(path: Path, out: Path, target: Path | None) -> None:
-    """Generate adapter.py for your agent — just run `pwngraph init`.
+@click.option(
+    "--model",
+    default=None,
+    envvar="PWNGRAPH_INIT_MODEL",
+    help="OpenAI model that builds the adapter (default: gpt-4.1; env PWNGRAPH_INIT_MODEL).",
+)
+@click.option(
+    "--max-steps",
+    default=40,
+    show_default=True,
+    type=click.IntRange(5, 200),
+    help="Exploration/validation steps the AI may take.",
+)
+@click.option(
+    "--timeout",
+    default=180,
+    show_default=True,
+    type=click.IntRange(10, 1800),
+    help="Seconds allowed for each adapter validation run (imports + build_agent()).",
+)
+def init_cmd(
+    path: Path,
+    out: Path,
+    target: Path | None,
+    model: str | None,
+    max_steps: int,
+    timeout: int,
+) -> None:
+    """Generate adapter.py for any LangChain / LangGraph / plain-Python agent repo.
 
-    PATH is where to look (default: current directory) — a directory is
-    searched recursively for the most likely agent file, a file is used
-    directly. When OPENAI_API_KEY is set and static analysis can't confidently
-    read the agent's tools/entry point off the source itself, PwnGraph falls
-    back to asking GPT-4o-mini.
-
-    No flags required:
+    Run it from the root of the agent's repository:
 
         export OPENAI_API_KEY=sk-...
         pwngraph init
 
-    Search a different directory, or point at one file directly:
+    An AI agent explores the repository (file tree, langgraph.json,
+    pyproject, the code that builds the agent and its tools), writes
+    adapter.py, and actually runs it — import, build_agent(), tool
+    enumeration — fixing and re-running until it loads the repository's REAL
+    agent with its REAL tools. Adapters that stub tools or don't import the
+    repository are rejected. If something only you can fix blocks it (a
+    missing dependency or API key), it stops and prints the exact command.
 
-        pwngraph init path/to/project
-        pwngraph init --target path/to/my_agent.py
+    Validation imports and runs the target's code in a subprocess, exactly as
+    a scan will — only run init on code you trust enough to scan.
+
+    Without OPENAI_API_KEY, a static (no-LLM) generator handles simple
+    single-file agents.
     """
     import os
 
     console.rule("[bold blue]PwnGraph Init[/bold blue]")
 
+    root = (path if path.is_dir() else path.parent).resolve()
+    hint = target or (path if path.is_file() else None)
+    if hint is not None and root not in hint.resolve().parents:
+        root = hint.resolve().parent
+
     api_key = os.getenv("OPENAI_API_KEY")
-
-    # ── Resolve the agent file ────────────────────────────────────────────────
-    # --target always wins (an explicit file). Otherwise PATH: a file is used
-    # directly, a directory is searched recursively (so `pwngraph init` from a
-    # repo root finds an agent sitting in a subfolder, not just the cwd).
-    agent_file = target
-    search_root = path if path.is_dir() else path.parent
-    if agent_file is None and path.is_file():
-        agent_file = path
-        console.print(f"[green]Using    :[/green] [cyan]{agent_file}[/cyan]")
-    if agent_file is None:
-        agent_file = _find_agent_file(search_root)
-        if agent_file is not None:
-            console.print(f"[green]Detected :[/green] [cyan]{agent_file}[/cyan]")
-        else:
-            console.print(f"[yellow]No agent file found under {search_root}.[/yellow]")
-
-    # ── Structural analysis — always run, always shown ─────────────────────────
-    # Independent of LLM vs. template generation below: this is a local, free,
-    # deterministic AST read of the file so you can see exactly what PwnGraph
-    # thinks your agent's callable surface looks like before anything is
-    # generated. Framework-based agents (LangChain/LangGraph) mostly show up
-    # here as "no plain-Python entry point" since their tools/entry point are
-    # framework objects, not bare functions — that's expected and fine.
-    plain_analysis = None
-    if agent_file is not None:
-        from pwngraph.scaffold import analyze_plain_agent
-
-        plain_analysis = analyze_plain_agent(agent_file)
-        if plain_analysis.all_functions:
-            console.print(
-                f"[dim]Functions found in {agent_file.name}: "
-                f"{', '.join(plain_analysis.all_functions)}[/dim]"
-            )
-        if plain_analysis.tools:
-            tool_names = ", ".join(n for n, _ in plain_analysis.tools)
-            console.print(f"[green]Tools    :[/green] {tool_names}")
-        if plain_analysis.entry_function:
-            console.print(
-                f"[green]Entry pt :[/green] {plain_analysis.entry_function}() "
-                f"[dim](confidence: {plain_analysis.entry_confidence})[/dim]"
-            )
-        console.print()
-
-    # ── LLM-powered mode — the primary path whenever a key is available ─────────
-    # Always tried first when OPENAI_API_KEY is set, regardless of how confident
-    # the static analysis above was. The analysis result is handed in as
-    # grounding facts (real module name, discovered entry point / tools) so the
-    # model has ground truth instead of having to infer everything from source,
-    # and its output is validated (syntax, build_agent() present, no leftover
-    # placeholders — see _llm_generate_adapter) before being trusted.
-    if agent_file is not None and api_key:
-        console.print("[green]Mode     :[/green] LLM-powered")
-        console.print()
-        ok = _llm_generate_adapter(agent_file, out, analysis=plain_analysis)
-        if ok:
-            budget = _suggested_budget(plain_analysis)
-            console.print(f"\n[bold green]Generated:[/bold green] {out}")
-            console.print()
-            console.print("Next steps:")
-            console.print(
-                f"  1. [bold cyan]pwngraph scan --target {out}:build_agent --dry-run[/bold cyan]"
-                "    ← verify tool count"
-            )
-            console.print(
-                f"  2. [bold cyan]pwngraph scan --target {out}:build_agent --attacks all "
-                f"--budget {budget} --authorized --out ./out[/bold cyan]"
-            )
-            console.print()
-            console.print(
-                "[dim]If --dry-run shows 0 tools, run `pwngraph init --target <file>` and point at the correct agent file.[/dim]"
-            )
-            return
-        console.print("[yellow]LLM generation failed validation — falling back.[/yellow]")
-        console.print()
-
-    # ── Deterministic plain-Python adapter — fallback only ──────────────────────
-    # Reached only when there's no API key, or the LLM call above failed
-    # validation. Static analysis being confident here still means it's exact
-    # (read straight off the real parsed source) — a safety net, not the
-    # primary path.
-    if agent_file is not None and plain_analysis is not None and plain_analysis.is_usable:
-        from pwngraph.scaffold import generate_plain_adapter
-
-        console.print("[green]Mode     :[/green] Static analysis (deterministic fallback, no LLM)")
-        generate_plain_adapter(
-            module=agent_file.stem,
-            entry_function=plain_analysis.entry_function or "",
-            tools=plain_analysis.tools,
-            tools_dict_name=plain_analysis.tools_dict_name,
-            output_path=out,
-        )
-        budget = _suggested_budget(plain_analysis)
-        console.print(f"[bold green]Generated:[/bold green] {out}")
-        console.print()
-        console.print(
-            "[dim]Verify _ENTRY_FUNCTION and _TOOL_DESCRIPTIONS at the top of the "
-            "file match your agent, then:[/dim]"
-        )
-        console.print(
-            f"  [bold cyan]pwngraph scan --target {out}:build_agent --dry-run[/bold cyan]"
-        )
-        console.print(
-            f"  [bold cyan]pwngraph scan --target {out}:build_agent --attacks all "
-            f"--budget {budget} --authorized --out ./out[/bold cyan]"
-        )
+    if api_key:
+        _ai_init(root, out, hint, model, max_steps, timeout, api_key)
         return
 
-    if agent_file is not None and not api_key:
-        console.print(
-            "[yellow]OPENAI_API_KEY not set — falling back to interactive template.[/yellow]\n"
-            "[dim]Tip: export OPENAI_API_KEY=<key> and re-run `pwngraph init` for zero-config generation.[/dim]"
-        )
-        console.print()
+    console.print(
+        "[yellow]OPENAI_API_KEY not set — using the static generator, which only handles "
+        "simple single-file agents.[/yellow]\n"
+        "[dim]export OPENAI_API_KEY=<key> and re-run for AI-driven generation that works "
+        "on full repositories.[/dim]\n"
+    )
+    _static_init(root, out, hint)
 
-    # ── Interactive template fallback ─────────────────────────────────────────
+
+def _ai_init(
+    root: Path,
+    out: Path,
+    hint: Path | None,
+    model: str | None,
+    max_steps: int,
+    timeout: int,
+    api_key: str,
+) -> None:
+    from pwngraph.initagent import DEFAULT_MODEL, build_adapter
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise click.ClickException("the openai package is required: pip install openai") from exc
+
+    model = model or DEFAULT_MODEL
+    console.print(f"[green]Repo     :[/green] {root}")
+    if hint is not None:
+        console.print(f"[green]Hint     :[/green] {hint}")
+    console.print(f"[green]Mode     :[/green] AI agent ({model}) — explore, write, run, fix")
+    console.print("[dim]Validation runs the target's code in a subprocess, as a scan will.[/dim]\n")
+
+    styles = {
+        "explore": ("dim", "  ·"),
+        "validate": ("cyan", "  ▶ validating adapter"),
+        "ok": ("bold green", "  ✓ loaded —"),
+        "fail": ("yellow", "  ✗"),
+        "info": ("dim", "  ·"),
+    }
+
+    def on_event(kind: str, text: str) -> None:
+        if kind == "think":
+            return
+        style, prefix = styles.get(kind, ("dim", "  ·"))
+        console.print(f"[{style}]{prefix} {escape(text)}[/{style}]")
+
+    result = build_adapter(
+        root,
+        out,
+        OpenAI(api_key=api_key),
+        model=model,
+        hint_file=hint,
+        max_steps=max_steps,
+        timeout=timeout,
+        on_event=on_event,
+    )
+    console.print()
+
+    if not result.ok:
+        if result.blocker:
+            console.print(f"[bold red]Blocked:[/bold red] {escape(result.blocker)}")
+            if result.user_action:
+                console.print(f"[bold]Fix:[/bold] {escape(result.user_action)}")
+            console.print("[dim]Then re-run `pwngraph init`.[/dim]")
+        else:
+            console.print(
+                f"[bold red]Could not build a working adapter[/bold red] "
+                f"after {result.steps} steps / {result.validations} validation runs."
+            )
+            if result.error:
+                tail = "\n".join(result.error.strip().splitlines()[-8:])
+                console.print(f"[dim]{escape(tail)}[/dim]")
+            console.print(
+                "[dim]Try `--target <file that builds the agent>`, a stronger `--model`, "
+                "or more `--max-steps`.[/dim]"
+            )
+        if result.failed_attempt is not None:
+            console.print(f"[dim]Last attempt saved to {result.failed_attempt}[/dim]")
+        raise SystemExit(1)
+
+    table = Table(title=f"Agent: {result.agent_type}", show_lines=False)
+    table.add_column("Tool")
+    table.add_column("Defined in")
+    table.add_column("Side effects", justify="center")
+    for t in result.tools:
+        table.add_row(
+            t["name"],
+            t.get("origin", ""),
+            "[red]yes[/red]" if t.get("action_sink") else "",
+        )
+    console.print(table)
+    console.print(
+        f"\n[bold green]Generated:[/bold green] {out}  "
+        f"[dim]({result.steps} steps, {result.validations} validation runs)[/dim]"
+    )
+    if any(t.get("action_sink") for t in result.tools):
+        console.print(
+            "[yellow]Tools marked with side effects run for real during a scan — "
+            "point them at a sandbox or mock them first.[/yellow]"
+        )
+    budget = max(25, len(result.tools) * 3)
+    console.print("\nNext steps:")
+    console.print(f"  1. [bold cyan]pwngraph scan --target {out}:build_agent --dry-run[/bold cyan]")
+    console.print(
+        f"  2. [bold cyan]pwngraph scan --target {out}:build_agent --attacks all "
+        f"--budget {budget} --authorized --out ./out[/bold cyan]"
+    )
+
+
+def _static_init(root: Path, out: Path, hint: Path | None) -> None:
+    """No-LLM fallback: AST read of one file, else the interactive template."""
+    agent_file = hint or _find_agent_file(root)
+    if agent_file is not None:
+        console.print(f"[green]Detected :[/green] [cyan]{agent_file}[/cyan]")
+        from pwngraph.scaffold import analyze_plain_agent, generate_plain_adapter
+
+        analysis = analyze_plain_agent(agent_file)
+        if analysis.tools:
+            console.print(f"[green]Tools    :[/green] {', '.join(n for n, _ in analysis.tools)}")
+        if analysis.is_usable:
+            generate_plain_adapter(
+                module=agent_file.stem,
+                entry_function=analysis.entry_function or "",
+                tools=analysis.tools,
+                tools_dict_name=analysis.tools_dict_name,
+                output_path=out,
+            )
+            budget = _suggested_budget(analysis)
+            console.print(f"[bold green]Generated:[/bold green] {out}")
+            console.print(
+                "[dim]Verify _ENTRY_FUNCTION and _TOOL_DESCRIPTIONS at the top of the "
+                "file match your agent, then:[/dim]"
+            )
+            console.print(
+                f"  [bold cyan]pwngraph scan --target {out}:build_agent --dry-run[/bold cyan]"
+            )
+            console.print(
+                f"  [bold cyan]pwngraph scan --target {out}:build_agent --attacks all "
+                f"--budget {budget} --authorized --out ./out[/bold cyan]"
+            )
+            return
+    else:
+        console.print(f"[yellow]No agent file found under {root}.[/yellow]")
+
     from pwngraph.scaffold import detect_project, generate_adapter
 
     with console.status("[dim]Scanning project...[/dim]"):
-        result = detect_project(Path("."))
+        result = detect_project(root)
 
     if result.framework != "unknown":
         console.print(f"[green]Framework:[/green] {result.framework.replace('_', ' ').title()}")
@@ -1282,9 +1377,6 @@ def init_cmd(path: Path, out: Path, target: Path | None) -> None:
         console.print(
             "[yellow]Framework not recognised — generic adapter will be generated.[/yellow]"
         )
-
-    if result.factory_hint:
-        console.print(f"[dim]Factory  : {result.factory_hint} (in {result.module_hint})[/dim]")
     console.print()
 
     _FW_CHOICES = click.Choice(
@@ -1505,219 +1597,6 @@ def _print_evidence_ladder(structural_graph: Any) -> None:
         )
 
 
-_ADAPTER_SYSTEM_PROMPT = """\
-You are a PwnGraph adapter generator. PwnGraph is a security testing tool for AI agents.
-It needs an adapter.py containing ONE function — build_agent() — that returns a live,
-callable agent instance. PwnGraph calls this function to get an agent to attack.
-
-You will receive Python source code for an AI agent you have never seen before.
-Your job is to produce a working adapter.py no matter what the agent looks like.
-
-Output ONLY valid Python code. No markdown. No code fences. No explanation.
-
-STEP 0 — decide if this is a FRAMEWORK agent or a PLAIN-PYTHON agent:
-
-    FRAMEWORK agent — the source imports langchain or langgraph.
-    → Follow STEP 1 through STEP 6 below (the LangChain/LangGraph path).
-
-    PLAIN-PYTHON agent — no langchain/langgraph import anywhere. This is
-    very common: a hand-rolled loop around openai.OpenAI(...).chat.completions
-    .create(...) or anthropic.Anthropic(...).messages.create(...), with tools
-    dispatched from a name->function dict (e.g. TOOLS = {"foo": foo_fn}) or an
-    if/elif chain. DO NOT invent LangChain/LangGraph objects for this case —
-    there is nothing to import and the result will not run. Instead, generate
-    a shim that drives the agent's OWN entry function directly and reports its
-    OWN tool calls to PwnGraph's tracer, unmodified:
-
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).parent))
-
-        import <source_module> as _agent_module
-
-        # The one function that takes one turn of user text and returns the
-        # agent's reply — e.g. run_agent(text), chat(text), respond(text).
-        _ENTRY_FUNCTION = "<entry_function_name>"
-        # The dict variable name whose values are the tool functions, if the
-        # source has one (e.g. "TOOLS"); otherwise None.
-        _TOOLS_DICT_NAME = "<dict_name_or_None>"
-        # Every tool function name paired with its docstring/description.
-        _TOOL_DESCRIPTIONS = [("tool_name", "description"), ...]
-
-        class _ShimTool:
-            def __init__(self, name, description, fn):
-                self.name = name
-                self.description = description
-                self._fn = fn
-
-            def _run(self, *args, **kwargs):
-                return self._fn(*args, **kwargs)
-
-        class _ShimAgent:
-            def __init__(self):
-                self.tools = [
-                    _ShimTool(name, desc, getattr(_agent_module, name))
-                    for name, desc in _TOOL_DESCRIPTIONS
-                    if hasattr(_agent_module, name)
-                ]
-
-            def invoke(self, inputs, config=None):
-                import json as _json
-                import uuid
-                callbacks = (config or {}).get("callbacks") or []
-                user_input = inputs.get("input", "")
-                tools_dict = (
-                    getattr(_agent_module, _TOOLS_DICT_NAME, None)
-                    if _TOOLS_DICT_NAME else None
-                )
-
-                def _make_wrapper(tool):
-                    def wrapper(*args, **kwargs):
-                        rid = uuid.uuid4()
-                        try:
-                            arg_str = _json.dumps(kwargs if kwargs else list(args))
-                        except TypeError:
-                            arg_str = str(kwargs or args)
-                        for cb in callbacks:
-                            if hasattr(cb, "on_tool_start"):
-                                cb.on_tool_start({"name": tool.name}, arg_str, run_id=rid)
-                        try:
-                            result = tool._run(*args, **kwargs)
-                        except Exception as exc:
-                            for cb in callbacks:
-                                if hasattr(cb, "on_tool_error"):
-                                    cb.on_tool_error(exc, run_id=rid)
-                            raise
-                        for cb in callbacks:
-                            if hasattr(cb, "on_tool_end"):
-                                cb.on_tool_end(output=str(result), run_id=rid)
-                        return result
-                    return wrapper
-
-                originals = {}
-                for tool in self.tools:
-                    original = getattr(_agent_module, tool.name, None)
-                    if original is None:
-                        continue
-                    originals[tool.name] = original
-                    wrapped = _make_wrapper(tool)
-                    setattr(_agent_module, tool.name, wrapped)
-                    if isinstance(tools_dict, dict) and tool.name in tools_dict:
-                        tools_dict[tool.name] = wrapped
-
-                try:
-                    entry = getattr(_agent_module, _ENTRY_FUNCTION)
-                    output = entry(user_input)
-                finally:
-                    for name, original in originals.items():
-                        setattr(_agent_module, name, original)
-                        if isinstance(tools_dict, dict) and name in tools_dict:
-                            tools_dict[name] = original
-
-                for cb in callbacks:
-                    if hasattr(cb, "on_agent_finish"):
-                        cb.on_agent_finish(
-                            type("Finish", (), {"return_values": {"output": output}})()
-                        )
-                return {"output": output}
-
-        def build_agent():
-            return _ShimAgent()
-
-    Fill in _ENTRY_FUNCTION, _TOOLS_DICT_NAME, and _TOOL_DESCRIPTIONS from your
-    own reading of the source (a user message may also hand you these facts
-    already extracted by static analysis — trust those unless the source
-    clearly contradicts them). NEVER reimplement a tool function's body —
-    only reference it by name; the shim imports and instruments the real one.
-    If this is a PLAIN-PYTHON agent, output the shim above (adjusted for the
-    real module/entry/tools) and SKIP STEP 1 through STEP 6 entirely.
-
-STEP 1 — sys.path (always add, safe even when not needed):
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent))
-
-STEP 2 — environment loading:
-    If the source calls load_dotenv() or reads os.environ, preserve it:
-    from dotenv import load_dotenv
-    load_dotenv()
-
-STEP 3 — detect and import the LLM provider (match what you see in the source):
-    from langchain_openai import ChatOpenAI            # default: model="gpt-4o-mini"
-    from langchain_anthropic import ChatAnthropic      # model="claude-3-haiku-20240307"
-    from langchain_google_genai import ChatGoogleGenerativeAI  # model="gemini-2.0-flash"
-    from langchain_groq import ChatGroq                # model="llama3-8b-8192"
-    from langchain_ollama import ChatOllama            # model="llama3"
-    If the LLM is unclear: default to ChatOpenAI(model="gpt-4o-mini")
-
-STEP 4 — detect and IMPORT ALL tools. NEVER produce tools = [].
-
-    CRITICAL: Do NOT copy, redefine, or reimplement any tool function.
-    ALWAYS import tools from the source module by name. Example:
-
-        from lab_agent import web_search, read_file, run_command, send_email
-
-    This preserves docstrings (required by @tool) and avoids duplication.
-
-    What to import:
-    a) Every @tool-decorated function defined in the source file → import by name
-    b) Tool objects assigned to variables → import those variables
-    c) LangChain built-in tools already imported in source → import those same classes
-    d) Tools from langchain_community.tools → import them directly
-    When in doubt: include the tool rather than exclude it.
-
-STEP 5 — detect the agent framework and build accordingly:
-
-    LangGraph (create_react_agent) — most common:
-        from langgraph.prebuilt import create_react_agent
-        return create_react_agent(model=llm, tools=tools)
-
-    LangGraph StateGraph — compile and return the graph.
-
-    LangChain AgentExecutor:
-        from langchain.agents import AgentExecutor, create_tool_calling_agent
-        from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful assistant."),
-            MessagesPlaceholder("chat_history", optional=True),
-            ("human", "{input}"),
-            MessagesPlaceholder("agent_scratchpad"),
-        ])
-        agent = create_tool_calling_agent(llm, tools, prompt)
-        return AgentExecutor(agent=agent, tools=tools)
-
-    If unclear: use LangGraph create_react_agent.
-
-STEP 6 — handle the factory:
-    CASE A: source has a zero-arg factory (def build_agent(), def get_agent(), etc.)
-            → call it directly inside your build_agent()
-    CASE B: factory requires args (session_id, user_id, config, etc.)
-            → call with sensible defaults (None, "", 0) or build the agent yourself
-    CASE C: no factory at all → assemble the agent from the parts you found
-
-    The output function MUST be named build_agent() and take NO arguments.
-
-OUTPUT FORMAT — raw Python only:
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent))
-
-    from dotenv import load_dotenv   # only if source uses it
-    load_dotenv()
-
-    from langchain_openai import ChatOpenAI
-    from langgraph.prebuilt import create_react_agent
-
-    # IMPORT tools from the source module — never redefine them
-    from <source_module> import tool_a, tool_b, tool_c
-
-    def build_agent():
-        llm = ChatOpenAI(model="gpt-4o-mini")
-        tools = [tool_a, tool_b, tool_c]
-        return create_react_agent(model=llm, tools=tools)
-"""
-
-
 _AGENT_FILE_SKIP_DIRS = {
     "venv",
     ".venv",
@@ -1823,181 +1702,6 @@ def _find_agent_file(scan_dir: Path) -> Path | None:
         if best is None or key[:2] > best[:2]:
             best = key
     return best[2] if best else None
-
-
-def _static_check_adapter_code(code: str) -> str | None:
-    """Cheap checks that don't require running anything. Returns an error
-    message on failure, or None if they all pass."""
-    try:
-        compile(code, "<adapter>", "exec")
-    except SyntaxError as exc:
-        return f"syntax error: {exc}"
-    if "def build_agent" not in code:
-        return "no build_agent() function"
-    leaked = re.findall(r"<[A-Za-z_][A-Za-z0-9_ ]{0,40}>", code)
-    if leaked:
-        return f"unfilled placeholder(s) left in the output: {', '.join(sorted(set(leaked)))}"
-    return None
-
-
-def _validate_adapter_runs(out: Path) -> str | None:
-    """Actually import the adapter, call build_agent(), and enumerate its
-    tools — catches the class of bug static checks can't, like a name that's
-    inconsistent with how it was imported (``from mod import x`` but the rest
-    of the code does ``getattr(mod, ...)``, as gpt-4o-mini did once here).
-
-    Returns an error message (the traceback) on failure, or None on success.
-    This genuinely runs the target agent file's top-level code, same as a
-    real scan moments later would — no new trust boundary crossed.
-    """
-    import contextlib
-    import importlib.util
-    import sys
-    import traceback as _tb
-    import uuid
-
-    mod_name = f"_pwngraph_adapter_validate_{uuid.uuid4().hex}"
-    parent = str(out.parent.resolve())
-    path_added = parent not in sys.path
-    if path_added:
-        sys.path.insert(0, parent)
-    try:
-        spec = importlib.util.spec_from_file_location(mod_name, str(out))
-        if spec is None or spec.loader is None:
-            return "could not load the generated adapter as a module"
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[mod_name] = module
-        spec.loader.exec_module(module)
-
-        agent = module.build_agent()
-
-        from pwngraph.connector import make_connector
-
-        tools = make_connector(agent).list_tools()
-        if not tools:
-            return "build_agent() ran, but list_tools() found zero tools"
-        return None
-    except Exception:  # noqa: BLE001 — the traceback is the point
-        return _tb.format_exc()
-    finally:
-        sys.modules.pop(mod_name, None)
-        if path_added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(parent)
-
-
-def _llm_generate_adapter(source_path: Path, out: Path, analysis: Any = None) -> bool:
-    """Use GPT-4o-mini to read source_path and write a pre-filled adapter to out.
-
-    ``analysis`` is the optional ``PlainAgentAnalysis`` from the local AST pass
-    (see ``pwngraph.scaffold.analyze_plain_agent``) — when it found a tool
-    inventory / entry point, those facts are handed to the model as grounding
-    so it doesn't have to (mis)infer them from source alone, and doesn't force
-    a framework-less agent into a LangChain shape it doesn't have.
-
-    The output is never trusted on the model's word: it's syntax-checked,
-    then actually imported and run (``_validate_adapter_runs``). A failure at
-    either stage is fed straight back to the model for one self-correction
-    attempt before giving up — a static/AST read can prove code is *plausible*,
-    only actually running it proves it *works*.
-
-    Returns True on success, False if the API key is missing, openai is
-    unavailable, or both generation attempts failed validation.
-    """
-    import os
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return False
-
-    try:
-        from openai import OpenAI
-    except ImportError:
-        console.print("[yellow]openai package not found — falling back to template.[/yellow]")
-        return False
-
-    source = source_path.read_text(encoding="utf-8")
-    client = OpenAI(api_key=api_key)
-
-    # The module name is never ambiguous — we know it from the filename. Hand
-    # it over as a fact so there's no placeholder for the model to leave
-    # unfilled (this is exactly what went wrong before: it echoed the prompt's
-    # own "<source_module>" example literally instead of substituting it).
-    hints = [f"The real Python module name to import is: {source_path.stem}"]
-    if analysis is not None and (analysis.tools or analysis.entry_function):
-        if analysis.entry_function:
-            hints.append(
-                f"Likely entry point: {analysis.entry_function}(user_text) "
-                f"(confidence: {analysis.entry_confidence})"
-            )
-        if analysis.tools:
-            names = ", ".join(n for n, _ in analysis.tools)
-            hints.append(f"Tool functions: {names}")
-        if analysis.tools_dict_name:
-            hints.append(f"Dispatch dict: {analysis.tools_dict_name}")
-    hints.append("Treat these as ground truth unless the source clearly contradicts them.")
-    user_content = (
-        f"Generate adapter.py for this agent:\n\n```python\n{source}\n```\n\n" + "\n".join(hints)
-    )
-
-    messages: list[Any] = [
-        {"role": "system", "content": _ADAPTER_SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
-
-    for attempt in range(2):
-        status = (
-            "Asking GPT-4o-mini to analyse"
-            if attempt == 0
-            else "Asking GPT-4o-mini to fix its own output for"
-        )
-        with console.status(f"[dim]{status} {source_path.name}…[/dim]"):
-            resp = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                temperature=0,
-            )
-
-        code = (resp.choices[0].message.content or "").strip()
-        # Strip markdown fences if the model added them despite the instruction
-        if code.startswith("```"):
-            lines = code.splitlines()
-            start = 1
-            end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
-            code = "\n".join(lines[start:end])
-
-        static_error = _static_check_adapter_code(code)
-        error_for_retry: str | None
-        if static_error is not None:
-            console.print(f"[yellow]⚠ LLM output failed a static check: {static_error}[/yellow]")
-            error_for_retry = static_error
-        else:
-            # Write it where it will actually be scanned from (relative
-            # imports inside it depend on this), then really run it.
-            out.write_text(code, encoding="utf-8")
-            error_for_retry = _validate_adapter_runs(out)
-            if error_for_retry is None:
-                return True
-            console.print(
-                "[yellow]⚠ Generated adapter raised an error when actually run "
-                f"(see below) — {'retrying once' if attempt == 0 else 'giving up'}.[/yellow]"
-            )
-            console.print(f"[dim]{error_for_retry.strip().splitlines()[-1]}[/dim]")
-
-        if attempt == 0:
-            messages.append({"role": "assistant", "content": code})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "That code failed when actually run. Fix it and output the "
-                        "complete corrected adapter.py (raw Python only, same rules as "
-                        f"before). The error was:\n\n{error_for_retry}"
-                    ),
-                }
-            )
-
-    return False
 
 
 def _port_is_open(host: str, port: int, timeout: float = 0.35) -> bool:

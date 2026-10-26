@@ -338,7 +338,7 @@ Example output:
 shell_injection   ASR: 70%   95% CI: 39%–89%   7/10 trials
 ```
 
-This means: we are 95% confident the true ASR is between 39% and 89%. The wide interval tells you 10 probes is not enough to be precise — raise `--budget` (or pass `--exhaustive`) so NEXUS spends more probes on that class for a tighter bound.
+This means: we are 95% confident the true ASR is between 39% and 89%. The wide interval tells you 10 probes is not enough to be precise — raise `--budget` so NEXUS spends more probes on that class for a tighter bound.
 
 ### How to use ASR
 
@@ -525,9 +525,9 @@ pwngraph scan --target path/to/agent.py:build_agent [options]
 | `--target` | required | Path to a Python file and factory function in the form `file.py:function_name`. The function must take no arguments and return an agent PwnGraph can drive — a LangChain `AgentExecutor`, compiled LangGraph, or the shim `pwngraph init` generates for a framework-less Python agent. |
 | `--attacks` | `all` | Which attack classes NEXUS may draw from. Choose from: `all`, `indirect_injection`, `tool_poisoning`, `prompt_exfiltration`, `shell_injection`, `file_read_injection`, `memory_poisoning`. |
 | `--authorized` | off, **required** | Explicit acknowledgment that you're authorized to test this target. NEXUS probes autonomously, deciding its own next move with no human between steps — raises `PermissionError` without this (not required for `--dry-run`). |
-| `--budget` | `25` | Max total adaptive probes NEXUS may run. |
+| `--budget` | `25` | Number of adaptive probes NEXUS sends (exact by default; see `--early-stop`). |
 | `--nexus-level` | `1` | 1–5: how aggressively NEXUS escalates a promising lead, validates a hit, or pursues a chain — does not change probe count. |
-| `--exhaustive` | off | Skip the confidence-based early stop; run to budget exhaustion or a genuine dead end so every class/tool gets a real, multi-attempt shot. |
+| `--exhaustive` / `--early-stop` | `--exhaustive` | `--exhaustive` spends the whole `--budget` (when NEXUS has no better idea it retries the least-tried class/tool), so every class gets a real, multi-attempt shot. `--early-stop` lets NEXUS stop once every class/tool has one attempt and confidence is high. If fewer probes than the budget are sent (`--early-stop`, `--max-calls`, blocked or failing payload generation), the NEXUS summary prints `probes sent N/budget` and the reason. |
 | `--baseline-runs` | `3` | Benign runs before fuzzing starts. Used to learn normal behavior. |
 | `--payload-trials` | `1` | With `--payload`: how many times to re-deliver each custom payload. Use `--payload-trials 10` for ASR measurement on your own payloads. No effect on NEXUS's own probes. |
 | `--out` | `./pwngraph_out` | Output directory for all generated files. |
@@ -547,7 +547,6 @@ pwngraph scan --target path/to/agent.py:build_agent [options]
 pwngraph scan --target my_agent.py:build_agent \
               --attacks all \
               --budget 60 \
-              --exhaustive \
               --authorized \
               --out ./results
 ```
@@ -583,7 +582,7 @@ pwngraph diff BASELINE.json --target adapter.py:build_agent [options]
 | `--authorized` | off, **required** | Same acknowledgment as `pwngraph scan --authorized` — the comparison scan is autonomous too. |
 | `--budget` | `25` | Max total adaptive probes NEXUS may run for the comparison scan. |
 | `--nexus-level` | `1` | 1–5, escalation aggressiveness for the comparison scan. |
-| `--exhaustive` | off | Skip the confidence-based early stop for the comparison scan. |
+| `--exhaustive` / `--early-stop` | `--exhaustive` | Spend the full budget on the comparison scan, or allow the early stop. |
 | `--fail-on-severity` | `high` | Fail on a new dangerous path at or above this severity (`critical`/`high`/`medium`/`low`), even if other paths closed in the same scan. |
 | `--fail-on-regression` / `--no-fail-on-regression` | on | CI gate on/off: exit `1` on a new path at/above `--fail-on-severity`, or a risk-grade regression versus the baseline. |
 
@@ -709,36 +708,63 @@ Prints a table of checks with OK / FAIL / WARN status — including whether Neo4
 
 ### `pwngraph init`
 
-Generate an adapter for a new target agent.
+Generate an adapter for a target agent. Run it from the root of the agent's
+repository — a cloned LangChain, LangGraph, or plain-Python agent project:
 
 ```bash
-pwngraph init --out adapter.py
+export OPENAI_API_KEY=sk-...
+pwngraph init
 ```
 
-`init` searches the current directory (recursively) for the most likely agent
-file, reads its structure with the AST, and writes a working `adapter.py`. It
-handles more than LangChain/LangGraph: a framework-less, hand-rolled
-Python agent — an OpenAI/Anthropic chat-completions loop dispatching to tools
-via a `TOOLS` dict or an if/elif chain — is detected **structurally, from its
-call graph, not from a hardcoded list of expected function names**, so it works
-regardless of how the author named things. For such an agent `init` generates a
-shim (`_ShimAgent`) that wraps your real entry function and tools so PwnGraph can
-trace it like any framework agent.
+With `OPENAI_API_KEY` set, `init` runs an **AI agent** that builds the adapter:
 
-Whichever path is taken, the generated adapter is **imported and run** before
-you're handed it — `init` calls `build_agent()` and enumerates its tools to
-confirm it actually loads. If it fails (e.g. an LLM-written adapter with a subtle
-bug), the real traceback is fed back to the model for one self-correcting retry,
-then falls back to the deterministic structural generator. With `OPENAI_API_KEY`
-set the LLM writes the adapter (grounded in the structural analysis above);
-without a key, the deterministic generator handles it, and only an unrecognized
-framework agent falls through to a fill-in-by-hand template.
+1. **Map** — it starts from a deterministic map of the repo: file tree,
+   `langgraph.json` / `pyproject.toml` / requirements, every line that builds
+   an agent, graph or tool, the directories the project's packages import from,
+   and the *installed* LangChain/LangGraph versions (so the code targets the API
+   you actually have).
+2. **Explore** — with read-only tools confined to the repo (`list_dir`,
+   `read_file`, `grep`) it follows imports to the project's real agent factory,
+   its arguments, its tools and the config/env it needs.
+3. **Write, run, fix** — it writes `adapter.py` and the validator actually runs
+   it in a subprocess (import → `build_agent()` → tool enumeration). Errors go
+   back to the model, which fixes and re-runs until the adapter loads.
+4. **Anti-cheat** — an adapter is rejected if any tool is implemented inside
+   `adapter.py`, or if it imports nothing from the target repository. Success
+   means PwnGraph is driving the repo's *real* agent with its *real* tools.
+5. **Blockers** — if something only you can fix stops it (a missing
+   third-party package, a missing API key), it stops and prints the exact command
+   to run. The last attempt is saved as `adapter.failed.py`; an existing
+   `adapter.py` is backed up to `adapter.py.bak` and restored on failure.
+
+On success it prints every tool, the file it is defined in, and which tools have
+real side effects (email, shell, writes) that you should sandbox or mock before
+scanning.
 
 ```bash
-pwngraph init                                                  # search cwd, autonomous
-pwngraph init path/to/project                                  # search a different directory
-pwngraph init --target path/to/my_agent.py --out adapter.py    # point at one file directly
+pwngraph init                                   # explore the current repo
+pwngraph init path/to/repo                      # explore another directory
+pwngraph init --target src/app/agent.py         # hint: start from this file
+pwngraph init --model gpt-4.1 --max-steps 60    # stronger model / more steps
 ```
+
+| Option | Default | Description |
+|---|---|---|
+| `--out` | `adapter.py` | Where to write the adapter |
+| `--target` | — | File that defines the agent; the AI starts there |
+| `--model` | `gpt-4.1` | OpenAI model that builds the adapter (env `PWNGRAPH_INIT_MODEL`) |
+| `--max-steps` | `40` | Exploration/validation steps the AI may take |
+| `--timeout` | `180` | Seconds per validation run (imports + `build_agent()`) |
+
+The target's dependencies must be installed in the same virtualenv as PwnGraph
+(usually `pip install -e <repo>` or `pip install -r requirements.txt`) — `init`
+tells you when they aren't. Validation imports and runs the target's code, just
+as a scan does, so only run `init` on code you are authorized to test.
+
+Without `OPENAI_API_KEY`, a static (no-LLM) generator handles simple single-file
+agents: a framework-less agent is read structurally from its call graph and
+wrapped in a `_ShimAgent`; anything else falls through to a fill-in-by-hand
+template.
 
 Then run `--dry-run` to verify tool discovery before doing a full scan.
 
@@ -910,12 +936,11 @@ pwngraph query dangerous-outcomes --scan-id <the printed scan_id>
 pwngraph scan --target adapter.py:build_agent \
               --attacks all \
               --budget 40 \
-              --exhaustive \
               --authorized \
               --out ./full_scan
 ```
 
-`--exhaustive` means every class/tool gets a real, multi-attempt shot instead of NEXUS stopping early once confidence looks good enough — useful for a solid ASR measurement across the whole scan.
+The whole budget is spent by default, so every class/tool gets a real, multi-attempt shot — a solid ASR measurement across the whole scan. Add `--early-stop` for a cheaper run that stops once confidence looks good enough.
 
 ### Step 8: Review findings
 

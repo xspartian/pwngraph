@@ -597,3 +597,24 @@ def test_observe_stores_the_decision_rationale_on_the_observation():
     assert obs.rationale == decision.rationale
     assert obs.rationale != ""
     assert nexus.state.observations[-1].rationale == decision.rationale
+
+
+def test_coverage_gives_up_on_tool_the_agent_never_calls():
+    """Regression: every probe reaches the agent through read_file, so
+    web_search is never called — coverage must stop aiming at it instead of
+    spending the whole budget on 'web_search is still untouched'."""
+    tools = [ToolSpec(name="read_file"), ToolSpec(name="web_search")]
+    nx = Nexus(["indirect_injection"], tools, budget=10, exhaustive=True)
+    for i in range(6):
+        decision = nx.decide_next()
+        if decision.action is NexusAction.STOP:
+            break
+        nx.observe(
+            _record("indirect_injection", "read_file", payload_id=f"p{i}"),
+            _verdict(True, payload_id=f"p{i}"),
+            action=decision.action,
+            rationale=decision.rationale,
+        )
+    rationales = [o.rationale for o in nx.state.observations]
+    assert sum("web_search" in r for r in rationales) == 2
+    assert nx.state.iteration == 6

@@ -115,45 +115,54 @@ pip install -e ".[all]"                      # everything, including dev/test de
 > [!NOTE]
 > PwnGraph is not on PyPI yet. `pip install pwngraph` fetches an unrelated placeholder package, so always install from the cloned folder as shown above (the `.` is the repo).
 
-**1b. Build the viewer (one time, needs Node.js 18+)** — the web UI is not pre-built in the repo. Without this step `pwngraph serve` starts but only serves the API, and every page in the browser returns `404 Not Found`.
+**2. Build the viewer (one time, needs Node.js 18+)** — the web UI is not pre-built in the repo. Without this step `pwngraph serve` starts but only serves the API, and every page in the browser returns `404 Not Found`.
 
 ```bash
 cd frontend && npm install && npm run build:pwngraph && cd ..
 ```
 
-Skip this if you only use the CLI and the JSON/SARIF output in `./out`.
+Skip this if you only use the CLI and the JSON/SARIF output in `./out`. (`npm install` may print an audit warning; it only affects the build tooling and can be ignored.)
 
-**2. Start Neo4j** — `pip install` doesn't drop project files on disk, so write the bundled compose file first:
+**3. Start Neo4j** — needs Docker. The repo already ships a `docker-compose.yml`, so from the repo root:
 
 ```bash
-pwngraph docker-compose && docker compose up -d
-pwngraph doctor    # confirms Python, deps, Neo4j reachability, and API keys are all OK
+docker compose up -d
+docker compose ps   # wait until neo4j shows "healthy" (~30s)
+pwngraph doctor     # confirms Python, deps, Neo4j reachability, and API keys are all OK
 ```
 
-`pwngraph docker-compose` refuses to overwrite an existing `docker-compose.yml`; if the file is already there, just run `docker compose up -d`. If it fails with `port is already allocated` (7474 or 7687), another Neo4j is already running — use that one, or stop it with `docker ps` then `docker stop <container>`.
+`doctor` should end with `READY`. If it says `neo4j-connection FAIL`, Neo4j is not up yet; wait a few seconds and re-run it.
 
-**3. Point it at your agent:**
+- **Installed without cloning?** (no `docker-compose.yml` on disk) run `pwngraph docker-compose` once to write one, then `docker compose up -d`. That command refuses to overwrite an existing file, and `--force` is an option of `pwngraph docker-compose`, not of `docker compose`.
+- **`port is already allocated` (7474 or 7687):** another Neo4j is already running. Use that one, or stop it with `docker ps` then `docker stop <container>`.
+- **`Cannot connect to the Docker daemon` (WSL2):** enable Docker Desktop's WSL integration for your distro, or install Docker inside WSL and start it.
+- **No Docker?** Any Neo4j 5.x works. Set `PWNGRAPH_NEO4J_URI`, `PWNGRAPH_NEO4J_USER` and `PWNGRAPH_NEO4J_PASSWORD` (the bundled compose file uses `pwngraph-dev`).
+
+**4. Open the viewer** — open a **new terminal**, go to the repo, activate the venv and start the server:
+
+```bash
+cd pwngraph && source venv/bin/activate   # Windows: venv\Scripts\activate
+pwngraph serve
+```
+
+Then open **http://127.0.0.1:8000** in your browser. Leave this terminal running; use your first terminal for the next steps. An empty scan list is normal until you run a scan in step 6.
+
+**5. Point it at your agent** (back in your first terminal):
 
 ```bash
 cd your-agent-repo && source /path/to/pwngraph/venv/bin/activate   # venv from step 1
 export OPENAI_API_KEY=sk-...   # must be a valid key, or init fails with a 401
-pwngraph init      # reads your agent's source, writes a working adapter.py, verifies it loads
+pwngraph init      # AI explores the repo, writes adapter.py, runs it and fixes it until the real agent loads
 ```
 
-**4. Scan:**
+**6. Scan:**
 
 ```bash
 pwngraph scan --target adapter.py:build_agent --dry-run                       # tool surface only, fires nothing
 pwngraph scan --target adapter.py:build_agent --attacks all --authorized --out ./out
 ```
 
-**5. Review the results:**
-
-```bash
-pwngraph serve   # -> http://127.0.0.1:8000 — attack graph, findings, CVSS, remediation
-```
-
-Keep `pwngraph serve` running in its own terminal while you browse; the report link printed by a scan (`/scans/<id>`) only works while it is up. If every page is a 404, you skipped step 1b.
+Then refresh the viewer. Keep `pwngraph serve` running while you browse; the report link printed by a scan (`/scans/<id>`) only works while it is up. If every page is a 404, you skipped step 2.
 
 > [!WARNING]
 > PwnGraph runs your agent's **real tools** with attacker-controlled inputs and makes **real LLM calls** (API cost). Point it at a non-production instance, and mock any tool with real side effects — email, payments, writes — first.
@@ -202,9 +211,9 @@ Make NEXUS reason harder about each probe (1–5, default 1 — doesn't change p
 pwngraph scan --target adapter.py:build_agent --attacks all --budget 60 --nexus-level 3 --authorized
 ```
 
-Skip the confidence-based early stop — give every class/tool a full multi-attempt shot:
+`--budget` is exact: a scan sends that many adaptive probes (plus the baseline and recon runs), and the summary says why if it ever sends fewer. For a cheaper run, let NEXUS stop once every class and tool has one attempt and confidence is high:
 ```bash
-pwngraph scan --target adapter.py:build_agent --attacks all --budget 80 --exhaustive --authorized
+pwngraph scan --target adapter.py:build_agent --attacks all --budget 80 --early-stop --authorized
 ```
 
 Run your own custom payload YAML alongside the built-in classes:

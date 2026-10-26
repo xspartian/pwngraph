@@ -1,7 +1,7 @@
 # Contributing to PwnGraph
 
 Thanks for considering a contribution. PwnGraph is a research tool aimed at
-Black Hat MEA 2026 and beyond; contributions that move toward those goals
+Black Hat India Arsenal 2026 and beyond; contributions that move toward those goals
 are very welcome.
 
 ## Setup

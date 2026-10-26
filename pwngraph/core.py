@@ -41,6 +41,12 @@ from pwngraph.types import AttackPath, EdgeType, Finding, NodeType, TraceEvent
 log = logging.getLogger("pwngraph")
 
 
+class TargetUnavailableError(RuntimeError):
+    """The target agent failed on every benign baseline run — it can't answer
+    at all (bad model name, missing/invalid API key, unreachable service), so
+    scanning it would only burn payload-generation calls on errors."""
+
+
 class PwnGraph:
     """High-level orchestrator.
 
@@ -110,6 +116,7 @@ class PwnGraph:
         # Populated by scan() — the final AttackState NEXUS built up over the
         # adaptive loop. None only until the first scan() call completes.
         self.nexus_state: AttackState | None = None
+        self.probe_stop_reason: str = ""
         # Populated by scan() — what recon learned about the target before
         # any adversarial payload (tools, elicited purpose, confirmed
         # chains, the derived attack plan). See pwngraph.recon.
@@ -132,7 +139,7 @@ class PwnGraph:
         payload_trials: int = 1,
         recon_budget: int = 6,
         nexus_level: int = 1,
-        nexus_exhaustive: bool = False,
+        nexus_exhaustive: bool = True,
         authorized: bool = False,
     ) -> list[AttackPath]:
         """Run a full scan: baseline → recon → adaptive probing → oracle → graph build.
@@ -141,8 +148,9 @@ class PwnGraph:
         the same BehavioralOracle) and decides the next attack class/tool
         before the Fuzzer generates the next payload — see ``pwngraph.nexus``.
         There is no fixed "N payloads per class" plan; ``budget`` is the total
-        number of adaptive probes NEXUS may spend, and it can stop earlier on
-        its own once confidence plateaus (see ``nexus_exhaustive``).
+        number of adaptive probes to send. By default all of it is spent;
+        ``nexus_exhaustive=False`` lets NEXUS stop early once confidence
+        plateaus.
 
         Parameters
         ----------
@@ -190,14 +198,12 @@ class PwnGraph:
             pursuit, reasoner-backed hypotheses) — they do not run more
             probes; ``budget`` alone controls that.
         nexus_exhaustive : bool
-            Disable NEXUS's confidence-based early stop. By default NEXUS
-            stops once every class/tool has at least one attempt and
-            confidence is high — efficient, but a class that failed its one
-            probe before that gate fired never gets its own failure-retry
-            cycle. With this on, NEXUS only stops on budget exhaustion or a
-            genuine dead end (no candidate strategy left) — use it when you
-            want every class given a real, multi-attempt shot regardless of
-            how quickly something else looks "good enough."
+            True (default): spend the whole ``budget`` — NEXUS keeps probing,
+            retrying the least-tried class/tool when it has no better idea,
+            so every class gets a real, multi-attempt shot. False: allow the
+            confidence-based early stop once every class/tool has one
+            attempt — cheaper, but a class that failed its single probe gets
+            no retry.
         authorized : bool
             Required. NEXUS decides its own next move autonomously, probe
             after probe, with no human reviewing each step — an explicit
@@ -281,14 +287,28 @@ class PwnGraph:
             task = prog.add_task("Scanning…", total=total_steps) if prog else None
 
             log.info("Running %d baseline traces…", baseline_runs)
+            baseline_errors: list[Exception] = []
+            baseline_done = 0
             for i in range(baseline_runs):
                 if max_calls and calls_made >= max_calls:
                     break
                 benign = self.fuzzer.benign_query(i, tools=tools)
-                self._run_one(benign, adversarial=False)
+                err = self._run_one(benign, adversarial=False)
+                baseline_done += 1
+                if err is not None:
+                    baseline_errors.append(err)
                 calls_made += 1
                 if prog and task is not None:
                     prog.advance(task)
+            if baseline_done and len(baseline_errors) == baseline_done:
+                last = baseline_errors[-1]
+                raise TargetUnavailableError(
+                    f"the target agent failed on all {baseline_done} benign baseline "
+                    f"run(s), so there is nothing to attack. Last error: "
+                    f"{type(last).__name__}: {last}\n"
+                    "Check the agent's model name, API key and any services it needs "
+                    "— e.g. a model the provider no longer serves returns 404 Not Found."
+                )
 
             # Recon — before any adversarial payload, learn what this agent
             # is for and which tools chain into which (see pwngraph.recon).
@@ -526,7 +546,13 @@ class PwnGraph:
             return None
 
         target_id = normalize_target_id(target)
-        static_tools = extract_langchain_tools_from_file(source_path)
+        static_tools = []
+        seen_names: set[str] = set()
+        for path in [source_path, *self._tool_source_files(exclude=source_path)]:
+            for tool in extract_langchain_tools_from_file(path):
+                if tool.name not in seen_names:
+                    seen_names.add(tool.name)
+                    static_tools.append(tool)
         self.structural_graph = reconcile(
             target_id,
             static_tools,
@@ -546,6 +572,34 @@ class PwnGraph:
             self.structural_graph.coverage(),
         )
         return self.structural_graph
+
+    def _tool_source_files(self, exclude: Path) -> list[Path]:
+        """The target's own source files that define its live tools.
+
+        An adapter (especially one `pwngraph init` writes) usually just imports
+        the repository's factory, so the adapter file holds no tool
+        definitions — static analysis has to follow the tools to where they
+        really live. Library tools (site-packages) are skipped: they are not
+        the target's code.
+        """
+        from pwngraph.connector.introspect import tool_objects, tool_source_file
+
+        files: list[Path] = []
+        for tool in tool_objects(self.agent):
+            src = tool_source_file(tool)
+            if not src:
+                continue
+            path = Path(src)
+            if (
+                path.suffix != ".py"
+                or not path.is_file()
+                or {"site-packages", "dist-packages"} & set(path.parts)
+                or path.resolve() == exclude.resolve()
+                or path in files
+            ):
+                continue
+            files.append(path)
+        return files
 
     def report(self, out_dir: str | Path) -> Path:
         """Write this scan's machine-readable artifacts to ``out_dir``.
@@ -776,6 +830,9 @@ class PwnGraph:
         low-confidence paths so the report doesn't overclaim.
         """
         target = self.connector.target_name()
+        payloads = {
+            r.payload.payload_id: r.payload for r in self._run_records if r.payload is not None
+        }
         findings: list[Finding] = []
         for p in paths:
             if getattr(p, "confidence", "high") != "high":
@@ -822,6 +879,17 @@ class PwnGraph:
 
             asr_entry = self.asr.get("by_payload", {}).get(payload_id, {})
             evidence: dict[str, Any] = {"sink": p.events[-1].content, "edges": adv_edges}
+            # The attack as delivered, so the PoC bundle can reproduce it: what
+            # the user sent, the attacker content itself, and where that content
+            # was planted (a carrier file/URL, or the poisoned tool's output).
+            payload = payloads.get(payload_id)
+            if payload is not None:
+                evidence["delivery_input"] = payload.delivery_input
+                evidence["injection"] = payload.injection_text
+                if payload.metadata.get("carrier_location"):
+                    evidence["carrier_location"] = payload.metadata["carrier_location"]
+                if payload.metadata.get("poisoned_output"):
+                    evidence["poisoned_tool"] = payload.target_tool
             if asr_entry:
                 evidence["attack_success_rate"] = asr_entry.get("asr")
                 evidence["trials"] = asr_entry.get("trials")
@@ -921,8 +989,12 @@ class PwnGraph:
         adversarial: bool,
         payload_id: str | None = None,
         payload: Any = None,
-    ) -> None:
-        """Execute a single agent turn under the tracer."""
+    ) -> Exception | None:
+        """Execute a single agent turn under the tracer.
+
+        Returns the exception the agent raised, if any (it is also recorded in
+        the trace) — the caller decides whether a failure matters.
+        """
         attack_class = getattr(getattr(payload, "attack_class", None), "value", None)
         self.tracer.start_run(
             user_input=user_input,
@@ -930,11 +1002,13 @@ class PwnGraph:
             payload_id=payload_id,
             attack_class=attack_class,
         )
+        error: Exception | None = None
         try:
             self.connector.invoke(user_input, tracer=self.tracer, payload=payload)
         except Exception as exc:  # noqa: BLE001 — fuzzing tolerates crashes
             log.debug("Agent crashed on input (recorded): %s", exc)
             self.tracer.record_error(str(exc))
+            error = exc
         finally:
             events = self.tracer.end_run()
             self.events.extend(events)
@@ -948,6 +1022,7 @@ class PwnGraph:
                     payload=payload,
                 )
             )
+        return error
 
     def _run_nexus_loop(
         self,
@@ -993,9 +1068,14 @@ class PwnGraph:
 
         decision = None
         consecutive_blocked = 0
+        consecutive_gen_failures = 0
+        # Why the loop ended before spending the budget, when it did — shown
+        # in the scan summary next to "probes sent N/budget".
+        self.probe_stop_reason = ""
         while not nexus.should_stop():
             if max_calls and calls_made >= max_calls:
                 log.warning("Cost guard: max_calls=%d reached, stopping NEXUS early.", max_calls)
+                self.probe_stop_reason = f"--max-calls {max_calls} reached"
                 break
             decision = nexus.decide_next()
             if decision.is_stop or decision.attack_class is None:
@@ -1039,7 +1119,16 @@ class PwnGraph:
                 Exception
             ) as exc:  # noqa: BLE001 — a flaky generation call shouldn't kill the run
                 log.warning("Payload generation failed (class=%s): %s", decision.attack_class, exc)
+                # A failed generation sends nothing and spends no budget, so a
+                # persistently failing generator would otherwise loop forever.
+                consecutive_gen_failures += 1
+                if consecutive_gen_failures >= 3:
+                    log.warning("3 consecutive payload generations failed — stopping NEXUS early.")
+                    nexus.state.status = NexusStatus.STOPPED_NO_PROGRESS
+                    self.probe_stop_reason = f"payload generation kept failing ({exc})"
+                    break
                 continue
+            consecutive_gen_failures = 0
 
             # Safety boundary: NEXUS decides its own next move autonomously,
             # with no human reviewing each step — see pwngraph.nexus.safety
@@ -1058,6 +1147,7 @@ class PwnGraph:
                 if consecutive_blocked >= 3:
                     log.warning("3 consecutive unsafe probes blocked — stopping NEXUS early.")
                     nexus.state.status = NexusStatus.STOPPED_NO_PROGRESS
+                    self.probe_stop_reason = "3 consecutive payloads blocked by the safety guard"
                     break
                 continue
             consecutive_blocked = 0
@@ -1108,6 +1198,11 @@ class PwnGraph:
                 prog.advance(task)
 
         self.nexus_state = nexus.state
+        if not self.probe_stop_reason and nexus.state.iteration < nexus.state.budget:
+            if nexus.state.status is NexusStatus.STOPPED_OBJECTIVE:
+                self.probe_stop_reason = "--early-stop: objective confidence reached"
+            elif nexus.state.status is NexusStatus.STOPPED_NO_PROGRESS:
+                self.probe_stop_reason = "no attack strategy left to try"
         log.info(
             "NEXUS finished: status=%s iterations=%d/%d successful=%s discovered_tools=%d",
             nexus.state.status.value,

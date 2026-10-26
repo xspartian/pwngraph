@@ -55,7 +55,8 @@ def main() -> int:
     for k, v in metrics.items():
         print(f"  {k:.<32} {v}")
     print(f"\n→ Report:        {out}")
-    print(f"→ Interactive:   {Path(args.out) / 'attack_graph.html'}")
+    print(f"→ Graph JSON:    {Path(args.out) / 'graph.json'}")
+    print("→ Interactive:   pwngraph serve  (http://127.0.0.1:8000)")
     print(f"→ Trace JSON:    {Path(args.out) / 'trace.json'}")
     return 0
 

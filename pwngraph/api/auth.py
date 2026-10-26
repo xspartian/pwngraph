@@ -23,13 +23,18 @@ from starlette.responses import JSONResponse
 # infra tooling expects to hit without credentials.
 _EXEMPT_PATHS = {"/api/health"}
 
+# Opening the viewer once as ``/?token=...`` stores the token in this cookie,
+# so the frontend's own same-origin fetches authenticate without a login UI.
+COOKIE_NAME = "pwngraph_token"
+
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
     """Requires a matching bearer token on every ``/api/*`` request.
 
-    Accepts the token as ``Authorization: Bearer <token>`` (for scripts/CI)
-    or a ``?token=`` query parameter (so a browser session can be used by
-    just pasting a URL — the frontend has no login UI yet).
+    Accepts the token as ``Authorization: Bearer <token>`` (for scripts/CI),
+    a ``?token=`` query parameter, or the ``pwngraph_token`` cookie. Loading
+    any page with a valid ``?token=`` sets that cookie, which is how the
+    browser viewer authenticates its API calls.
     """
 
     def __init__(self, app, token: str) -> None:
@@ -37,7 +42,13 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         self._token = token
 
     async def dispatch(self, request: Request, call_next):
-        if not request.url.path.startswith("/api/") or request.url.path in _EXEMPT_PATHS:
+        if not request.url.path.startswith("/api/"):
+            response = await call_next(request)
+            supplied = request.query_params.get("token")
+            if supplied and hmac.compare_digest(supplied, self._token):
+                response.set_cookie(COOKIE_NAME, supplied, httponly=True, samesite="strict")
+            return response
+        if request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
         supplied = _extract_token(request)
         if supplied is None or not hmac.compare_digest(supplied, self._token):
@@ -51,4 +62,4 @@ def _extract_token(request: Request) -> str | None:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    return request.query_params.get("token")
+    return request.query_params.get("token") or request.cookies.get(COOKIE_NAME)

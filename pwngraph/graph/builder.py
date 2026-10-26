@@ -63,6 +63,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
+from pwngraph import channel
 from pwngraph.backend import GraphBackend, make_backend
 from pwngraph.redact import redact_secrets
 from pwngraph.types import (
@@ -113,6 +114,10 @@ class GraphBuilder:
         # canary reaching one of these is high-impact; this set drives the
         # success oracle so we don't flag benign echoes as critical findings.
         self._action_sinks: set[str] = action_sinks or set()
+        # run_id → that run's events in emission order. Channel checks (did a
+        # token arrive via a tool result, or only via the user's message?)
+        # need the run's own ordering, not the whole scan's.
+        self._run_events: dict[str, list[TraceEvent]] = {}
 
     # ------------------------------------------------------------------
     # Construction
@@ -138,6 +143,7 @@ class GraphBuilder:
         # First pass: index events and record canary origins.
         for ev in events:
             self._events_by_id[ev.event_id] = ev
+            self._run_events.setdefault(ev.run_id, []).append(ev)
             if ev.is_adversarial:
                 for c in _CANARY_RE.findall(ev.content):
                     # First time we see this canary, remember its origin event.
@@ -151,6 +157,20 @@ class GraphBuilder:
         for ev in events:
             if ev.parent_event_id and ev.parent_event_id in self._events_by_id:
                 self._add_edge(self._events_by_id[ev.parent_event_id], ev)
+
+        # Data-flow edges: frameworks parent every tool call to the run's root
+        # (LangGraph does), so parentage alone draws `user → send_email` and
+        # loses the hop that made it an attack — the document `read_file`
+        # returned. Link each carrier tool result to the later tool call its
+        # attacker token reached, so the attack path shows the real chain.
+        for ev in events:
+            if ev.node_type is not NodeType.TOOL_CALL or not ev.is_adversarial:
+                continue
+            tokens = set(_CANARY_RE.findall(ev.content))
+            run = self._run_events.get(ev.run_id, [])
+            for carrier in channel.carriers_before(run, ev, tokens):
+                if carrier.event_id != ev.parent_event_id:
+                    self._add_edge(carrier, ev)
 
         # Fourth pass: attach DangerousOutcome sinks for canary hits and exfil.
         for ev in events:
@@ -171,19 +191,27 @@ class GraphBuilder:
         )
 
         seen: dict[str, AttackPath] = {}
-        for src in sources:
-            for sink in sinks:
+        for sink in sinks:
+            # One path per sink: a sink can be reachable both straight from the
+            # root (parentage) and through the carrier that delivered the
+            # payload (data-flow edge). The most complete story wins — most
+            # adversarial hops, then longest — so the report shows the
+            # carrier instead of a shortcut, and one outcome is one finding.
+            best: AttackPath | None = None
+            for src in sources:
                 if not self.graph.has_path(src, sink):
                     continue
                 # The backend applies a hop cutoff; without one, simple-path
                 # enumeration blows up combinatorially on dense graphs.
                 for raw in self.graph.simple_paths(src, sink):
                     path = self._materialize_path(raw)
-                    if path is None:
-                        continue
-                    sig = path.signature()
-                    if sig not in seen or path.severity.score > seen[sig].severity.score:
-                        seen[sig] = path
+                    if path is not None and (best is None or _path_rank(path) > _path_rank(best)):
+                        best = path
+            if best is None:
+                continue
+            sig = best.signature()
+            if sig not in seen or best.severity.score > seen[sig].severity.score:
+                seen[sig] = best
 
         paths = sorted(seen.values(), key=lambda p: -p.severity.score)
         log.info("find_dangerous_paths: %d unique paths", len(paths))
@@ -344,6 +372,12 @@ class GraphBuilder:
             if self._canary_origin.get(c) not in (None, ev.event_id)
         ]
         if not propagated:
+            return
+
+        # The user typed the token and asked for this — not a hijack. Only a
+        # token delivered through an untrusted channel (a tool result) counts.
+        run = self._run_events.get(ev.run_id, [ev])
+        if channel.direct_only(run, ev, set(propagated)):
             return
 
         if ev.node_type is NodeType.TOOL_CALL:
@@ -552,3 +586,8 @@ class GraphBuilder:
         steps = " → ".join(f"{e.node_type.value}({e.name})" for e in events)
         adv_edges = ", ".join(sorted({e.value for e in edges if e.is_adversarial}))
         return f"{steps}  |  via: {adv_edges or 'normal'}"
+
+
+def _path_rank(path: AttackPath) -> tuple[float, int, int]:
+    adversarial = sum(1 for e in path.edge_types if e.is_adversarial)
+    return (path.severity.score, adversarial, len(path.events))

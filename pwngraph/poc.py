@@ -119,12 +119,15 @@ def export_poc(
             if m and not canary:
                 canary = m.group()
 
-    # Write the raw injection text as a file.
+    # The attacker content itself — what was planted in the carrier document,
+    # returned by the poisoned tool, or (direct attacks) typed by the user.
+    injection = finding.evidence.get("injection") or delivery_input
+    delivery_input = finding.evidence.get("delivery_input") or delivery_input
     payload_file = poc_dir / "payload.txt"
-    payload_file.write_text(finding.evidence.get("sink", delivery_input), encoding="utf-8")
+    payload_file.write_text(injection, encoding="utf-8")
 
     # Write the human-readable PoC.
-    md = _poc_markdown(finding, delivery_input, canary, target_spec, str(payload_file))
+    md = _poc_markdown(finding, delivery_input, canary, target_spec, payload_file.name)
     (poc_dir / "poc.md").write_text(md, encoding="utf-8")
 
     # Machine-readable JSON record.
@@ -140,10 +143,11 @@ def export_poc(
         "canary": canary,
         "delivery_input": delivery_input,
         "payload_file": str(payload_file),
-        "replay_command": (
+        "carrier_location": finding.evidence.get("carrier_location"),
+        "poisoned_tool": finding.evidence.get("poisoned_tool"),
+        "retest_command": (
             f"pwngraph scan --target {target_spec} "
-            f"--attacks {finding.attack_class} "
-            f"--budget 10 --exhaustive --seed 0 --authorized --out ./poc_replay"
+            f"--attacks {finding.attack_class} --budget 10 --authorized --out ./poc_replay"
         ),
         "steps_to_reproduce": finding.steps_to_reproduce,
         "impact": finding.impact,
@@ -160,9 +164,25 @@ def _poc_markdown(
     delivery_input: str,
     canary: str,
     target_spec: str,
-    payload_path: str,
+    payload_name: str,
 ) -> str:
     steps = "\n".join(f"{i+1}. {s}" for i, s in enumerate(finding.steps_to_reproduce))
+    carrier = finding.evidence.get("carrier_location")
+    poisoned_tool = finding.evidence.get("poisoned_tool")
+    if carrier:
+        plant = (
+            f"Place the content of `{payload_name}` at `{carrier}` (or any location the "
+            f"agent will read), then send the delivery input below. The attack rides in "
+            f"on that document — the user's message itself is benign."
+        )
+    elif poisoned_tool:
+        plant = (
+            f"Make the `{poisoned_tool}` tool return the content of `{payload_name}` "
+            f"(e.g. a compromised upstream API or data source), then send the delivery "
+            f"input below. The attack rides in on the tool's output."
+        )
+    else:
+        plant = f"Direct attack: the delivery input below is the payload (`{payload_name}`)."
     evidence = finding.evidence.get("attack_success_rate")
     asr_line = f"**Attack Success Rate:** {evidence*100:.0f}%  \n" if evidence is not None else ""
     return f"""# PoC: {finding.title}
@@ -179,6 +199,8 @@ def _poc_markdown(
 
 ## Steps to Reproduce
 
+{plant}
+
 {steps}
 
 ## Delivery Input
@@ -187,18 +209,22 @@ def _poc_markdown(
 {delivery_input[:1000]}
 ```
 
-## Replay Command
+## Re-test
+
+Payloads are LLM-generated, so a new scan writes fresh ones rather than
+replaying this exact text — to replay it exactly, use the content above.
 
 ```bash
 pwngraph scan \\
   --target {target_spec} \\
   --attacks {finding.attack_class} \\
-  --budget 10 --exhaustive --seed 0 --authorized \\
+  --budget 10 --authorized \\
   --out ./poc_replay
 ```
 
-**Success condition:** observe `{canary}` in a tool-call argument or tool result
-in `poc_replay/trace.json`, or an ASR > 0 in `poc_replay/asr.json`.
+**Success condition:** the agent acts on the planted instruction — here, `{canary}`
+reaches a tool-call argument — visible in `poc_replay/trace.json` or as ASR > 0 in
+`poc_replay/asr.json`.
 
 ## Impact
 

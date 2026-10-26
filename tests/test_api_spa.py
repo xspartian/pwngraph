@@ -88,3 +88,15 @@ def test_api_only_mode_when_no_frontend_is_built(tmp_path):
     client = TestClient(create_app(FakeGraphBackend(), static_dir=tmp_path / "nope"))
     assert client.get("/api/health").status_code == 200
     assert client.get("/").status_code == 404
+
+
+def test_token_in_page_url_lets_the_viewer_call_the_api(tmp_path):
+    """With --token, the frontend sends no header — opening /?token= once must
+    set a cookie its same-origin API calls then authenticate with."""
+    app = create_app(FakeGraphBackend(), static_dir=_static_dir(tmp_path), api_token="s3cret")
+    client = TestClient(app)
+    assert client.get("/api/scans").status_code == 401
+    assert client.get("/?token=wrong").status_code == 200
+    assert client.get("/api/scans").status_code == 401
+    assert client.get("/?token=s3cret").status_code == 200
+    assert client.get("/api/scans").status_code == 200

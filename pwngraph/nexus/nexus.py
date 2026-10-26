@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# How many probes may aim at a tool the agent never actually calls before
+# coverage stops insisting on it. Some tools are only reachable through
+# another tool (a planted document always arrives via read_file), so the
+# called tool never matches the aimed one and the sweep would otherwise
+# spend the rest of the budget chasing it.
+_AIMS_BEFORE_UNREACHABLE = 2
+
 
 class Nexus:
     """Adaptive attack-intelligence layer sitting between Oracle and Builder.
@@ -123,6 +130,8 @@ class Nexus:
         # appended to this same list as they're decided, so it stays a real,
         # inspectable record of NEXUS's plan rather than a one-shot list.
         self.plan: list[PlanItem] = self._build_plan()
+        # tool -> how many decisions aimed at it via tools_hint.
+        self._aims: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -178,6 +187,11 @@ class Nexus:
             )
 
         candidates = self._generate_candidates()
+        if not candidates and self.exhaustive:
+            # Exhaustive mode spends the whole budget: with no better idea,
+            # another fresh payload against the least-tried class/tool pair
+            # still sharpens that class's ASR estimate.
+            candidates = self._least_tried_retry()
         if not candidates:
             self.state.status = NexusStatus.STOPPED_NO_PROGRESS
             return NexusDecision(action=NexusAction.STOP, rationale="no candidate strategy left")
@@ -185,7 +199,11 @@ class Nexus:
         if self.cfg.use_reasoner and len(candidates) > 1:
             candidates = self.reasoner.rank(self.state, candidates)
 
-        return candidates[0]
+        chosen = candidates[0]
+        if chosen.tools_hint:
+            aimed = chosen.tools_hint[0]
+            self._aims[aimed] = self._aims.get(aimed, 0) + 1
+        return chosen
 
     def observe(
         self,
@@ -317,7 +335,6 @@ class Nexus:
         promote a different real alternative.
         """
         tools_hint = [last.target_tool] if last.target_tool else None
-        all_tool_names = [t.name for t in self.tools]
 
         if last.confidence == "high":
             # Harvest this class's remaining tool surface before hardening,
@@ -331,7 +348,7 @@ class Nexus:
             # be able to skip same-class breadth in favor of an immediate
             # cross-class pivot; that was the exact regression this guarded
             # against before the reasoner could fire at all).
-            untried = self.state.untried_tools_for_class(last.attack_class, all_tool_names)
+            untried = self._untried_tools(last.attack_class)
             if untried:
                 next_tool = untried[0]
                 return [
@@ -478,7 +495,7 @@ class Nexus:
         # No other class to move to and validation tolerance is exhausted (or
         # disabled) — keep probing this class against an untried tool rather
         # than fabricating a "moving on to X" that names the same class.
-        untried = self.state.untried_tools_for_class(last.attack_class, all_tool_names)
+        untried = self._untried_tools(last.attack_class)
         return [
             NexusDecision(
                 action=NexusAction.EXPLORE,
@@ -503,9 +520,7 @@ class Nexus:
         # tools," which makes the failure signal that drives TRY_ALTERNATIVE
         # below noisy. Falls back to no hint (the Fuzzer's own default
         # selection) once every tool has already been tried and failed.
-        untried = self.state.untried_tools_for_class(
-            last.attack_class, [t.name for t in self.tools]
-        )
+        untried = self._untried_tools(last.attack_class)
         alternative_class = self._next_unexplored_class(exclude=last.attack_class)
         if (
             fails_in_row >= self.cfg.max_consecutive_failures_before_switch
@@ -542,9 +557,31 @@ class Nexus:
         """Tools with zero attempts across *every* attack class, action sinks
         first — the coverage floor's own candidate list."""
         touched = {sig.split(":", 1)[1] for sig in self.state.tried_signatures}
-        untouched = [t for t in self.tools if t.name not in touched]
+        unreachable = self._unreachable_tools()
+        untouched = [t for t in self.tools if t.name not in touched | unreachable]
         untouched.sort(key=lambda t: 0 if t.is_action_sink else 1)
         return [t.name for t in untouched]
+
+    def _unreachable_tools(self) -> set[str]:
+        """Tools aimed at ``_AIMS_BEFORE_UNREACHABLE`` times that the agent
+        has never called — coverage moves on instead of re-aiming forever."""
+        called = set(self.state.discovered_capabilities)
+        return {
+            name
+            for name, n in self._aims.items()
+            if n >= _AIMS_BEFORE_UNREACHABLE and name not in called
+        }
+
+    def _untried_tools(self, attack_class: str) -> list[str]:
+        """Tools never attempted for ``attack_class``, minus unreachable ones."""
+        unreachable = self._unreachable_tools()
+        return [
+            name
+            for name in self.state.untried_tools_for_class(
+                attack_class, [t.name for t in self.tools]
+            )
+            if name not in unreachable
+        ]
 
     def _never_touched_classes(self) -> list[str]:
         """Attack classes with zero attempts against any tool, in declared order."""
@@ -626,6 +663,29 @@ class Nexus:
                 priority=1000.0 - i,
             )
             for i in range(n)
+        ]
+
+    def _least_tried_retry(self) -> list[NexusDecision]:
+        if not self.state.attack_classes:
+            return []
+        counts = self.state.attempts_per_class()
+        attack_class = min(self.state.attack_classes, key=lambda c: counts.get(c, 0))
+        tried = self.state.tried_signatures
+        tools = sorted(
+            (t.name for t in self.tools),
+            key=lambda name: sum(1 for sig in tried if sig.split(":", 1)[-1] == name),
+        )
+        return [
+            NexusDecision(
+                action=NexusAction.EXPLORE,
+                attack_class=attack_class,
+                tools_hint=tools[:1] or None,
+                rationale=(
+                    f"budget remains — fresh attempt at least-tried class '{attack_class}' "
+                    f"({counts.get(attack_class, 0)} so far)"
+                    + (f" against '{tools[0]}'" if tools else "")
+                ),
+            )
         ]
 
     def _next_unexplored_class(self, exclude: str | None = None) -> str | None:

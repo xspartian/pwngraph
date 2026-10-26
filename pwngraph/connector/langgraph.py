@@ -147,7 +147,7 @@ class LangGraphConnector(Connector):
             msgs = result.get("messages", [])
             # Walk messages in reverse to find the last AI reply.
             for msg in reversed(msgs):
-                if AIMessage and isinstance(msg, AIMessage):
+                if AIMessage is not None and isinstance(msg, AIMessage):
                     return flatten_text(getattr(msg, "content", str(msg)))
                 if (
                     hasattr(msg, "content")

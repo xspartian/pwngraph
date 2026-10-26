@@ -47,12 +47,20 @@ Initial public release.
   possible/observed/validated/exploited evidence ladder for the target's
   full tool surface, not just what a given scan happened to trigger.
 
+- **Channel-aware oracle**: a hijack counts only when attacker content
+  reached the agent through an untrusted channel (a document, web page or
+  tool result). An action the user's own message asked for is logged as
+  user-requested, not reported as a finding.
+- `--budget` is exact: NEXUS spends every probe unless `--early-stop` is
+  passed, and reports `probes sent N/budget` with the reason when it stops
+  short.
+
 ### Framework support
 
-- Full runtime interception for LangChain (callback-level) and LangGraph
-  (`astream_events` v2) agents, plus a structurally-detected shim for
-  framework-less, hand-rolled Python agents — `pwngraph init` generates a
-  working adapter for any of the three automatically.
+- Full runtime interception for LangChain and LangGraph agents
+  (callback-level), plus a structurally-detected shim for
+  framework-less, hand-rolled Python agents — `pwngraph init` uses an AI agent to
+  explore the repo, write `adapter.py`, and validate it against the real agent.
 
 ### Reporting & storage
 

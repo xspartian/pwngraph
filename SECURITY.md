@@ -28,5 +28,5 @@ to acknowledge reports within a few days.
 
 ## Supported versions
 
-PwnGraph is pre-1.0 (`0.1.x`). Only the latest release on the default branch
+PwnGraph is at 1.0.x. Only the latest release on the default branch
 receives security fixes.
